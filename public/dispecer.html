@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="sr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Dispečer - Taksi Udruženje</title>
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+  <style>
+    body { height: 100vh; overflow: hidden; }
+    .layout {
+      display: grid;
+      grid-template-columns: 320px 1fr 320px;
+      height: calc(100vh - 60px);
+      gap: 0;
+    }
+    .col { padding: 16px; overflow-y: auto; border-right: 1px solid var(--border); }
+    .col:last-child { border-right: none; border-left: 1px solid var(--border); }
+    #map { height: 100%; }
+    .driver-item, .ride-item {
+      padding: 10px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      margin-bottom: 8px;
+      background: var(--panel2);
+    }
+  </style>
+</head>
+<body>
+  <header class="app-header">
+    <h1>🚕 Dispečerska Centrala</h1>
+    <span class="small muted" style="margin-left:auto">Interni operativni sistem udruženja</span>
+  </header>
+
+  <div class="layout">
+    <!-- Leva kolona: vozači -->
+    <div class="col">
+      <div class="flex-between mb">
+        <h2 style="margin:0">Vozači</h2>
+      </div>
+      <div class="field">
+        <input type="text" id="driverName" placeholder="Ime vozača">
+      </div>
+      <div class="field">
+        <input type="text" id="driverVehicle" placeholder="Vozilo (npr. BG-123-AB)">
+      </div>
+      <div class="field">
+        <input type="text" id="driverPhone" placeholder="Telefon">
+      </div>
+      <button class="success" style="width:100%" onclick="addDriver()">+ Dodaj vozača</button>
+      <div id="driversList" class="mt"></div>
+    </div>
+
+    <!-- Srednja kolona: mapa -->
+    <div class="col" style="padding:0">
+      <div id="map"></div>
+    </div>
+
+    <!-- Desna kolona: vožnje -->
+    <div class="col">
+      <h2 style="margin:0 0 8px 0">Aktivne vožnje</h2>
+      <div id="ridesList"></div>
+
+      <h2 style="margin:16px 0 8px 0">Tarifa</h2>
+      <div class="card" style="padding:10px">
+        <label>Start (RSD)</label>
+        <input type="number" id="baseFare" onchange="updateSettings()">
+        <label>Po km (RSD)</label>
+        <input type="number" id="pricePerKm" onchange="updateSettings()">
+        <label>Po min (RSD)</label>
+        <input type="number" id="pricePerMinute" onchange="updateSettings()">
+      </div>
+    </div>
+  </div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="/socket.io/socket.io.js"></script>
+  <script>
+    const socket = io();
+    let map, markers = {};
+    let drivers = [], rides = [], settings = {};
+
+    // Mapa (centar: Beograd)
+    map = L.map('map').setView([44.8125, 20.4612], 12);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      attribution: '© OpenStreetMap',
+      maxZoom: 19
+    }).addTo(map);
+
+    const STATUS_RS = {
+      pending: 'Na čekanju', assigned: 'Dodeljena', accepted: 'Prihvaćena',
+      arrived: 'Stigao', started: 'U toku', completed: 'Završena', cancelled: 'Otkazana'
+    };
+    const DRIVER_STATUS_RS = { offline: 'Offline', available: 'Dostupan', busy: 'Zauzet' };
+
+    function toast(msg) {
+      const t = document.createElement('div');
+      t.className = 'toast';
+      t.textContent = msg;
+      document.body.appendChild(t);
+      setTimeout(() => t.remove(), 3000);
+    }
+
+    function renderDrivers() {
+      const el = document.getElementById('driversList');
+      el.innerHTML = drivers.map(d => `
+        <div class="driver-item">
+          <div class="flex-between">
+            <strong>${d.name}</strong>
+            <span class="badge ${d.status}">${DRIVER_STATUS_RS[d.status] || d.status}</span>
+          </div>
+          <div class="small muted">${d.vehicle} ${d.phone}</div>
+          <div class="small muted">ID: ${d.id}</div>
+          <div class="mt flex">
+            <button class="secondary small" onclick="deleteDriver('${d.id}')">Obriši</button>
+          </div>
+        </div>
+      `).join('') || '<p class="muted">Nema vozača. Dodajte prvog.</p>';
+
+      // Ažuriraj markere na mapi
+      const ids = new Set(drivers.map(d => d.id));
+      for (const id in markers) {
+        if (!ids.has(id)) { map.removeLayer(markers[id]); delete markers[id]; }
+      }
+      drivers.forEach(d => {
+        if (d.lat != null && d.lng != null) {
+          const icon = L.divIcon({
+            className: '',
+            html: `<div style="background:${d.status === 'busy' ? '#f59e0b' : d.status === 'available' ? '#22c55e' : '#64748b'};width:16px;height:16px;border-radius:50%;border:2px solid white;"></div>`,
+            iconSize: [16,16], iconAnchor: [8,8]
+          });
+          if (markers[d.id]) {
+            markers[d.id].setLatLng([d.lat, d.lng]);
+          } else {
+            markers[d.id] = L.marker([d.lat, d.lng], { icon }).addTo(map)
+              .bindPopup(`<b>${d.name}</b><br>${d.vehicle}<br>${DRIVER_STATUS_RS[d.status]}`);
+          }
+        }
+      });
+    }
+
+    function renderRides() {
+      const el = document.getElementById('ridesList');
+      const active = rides.filter(r => !['completed', 'cancelled'].includes(r.status));
+      el.innerHTML = active.map(r => {
+        const driver = drivers.find(d => d.id === r.driverId);
+        return `
+          <div class="ride-item">
+            <div class="flex-between">
+              <span class="badge ${r.status}">${STATUS_RS[r.status]}</span>
+              <span class="small">${r.id}</span>
+            </div>
+            <div class="small muted">📍 ${(r.from?.lat ?? 0).toFixed(4)}, ${(r.from?.lng ?? 0).toFixed(4)}</div>
+            <div class="small muted">🎯 ${(r.to?.lat ?? 0).toFixed(4)}, ${(r.to?.lng ?? 0).toFixed(4)}</div>
+            <div class="small">${r.price ? r.price + ' RSD' : ''}</div>
+            ${driver ? `<div class="small">Vozač: <b>${driver.name}</b></div>` : ''}
+            <div class="mt">
+              ${r.status === 'pending' ? `<select id="driverSelect-${r.id}" style="margin-bottom:6px">
+                <option value="">— Izaberi vozača —</option>
+                ${drivers.filter(d => d.status === 'available' || d.status === 'offline').map(d => `<option value="${d.id}">${d.name} (${d.vehicle})</option>`).join('')}
+              </select>
+              <button class="success small" style="width:100%" onclick="assignRide('${r.id}')">Dodeli vozača</button>` : ''}
+            </div>
+          </div>
+        `;
+      }).join('') || '<p class="muted">Nema aktivnih vožnji.</p>';
+    }
+
+    function renderSettings() {
+      document.getElementById('baseFare').value = settings.baseFare || 200;
+      document.getElementById('pricePerKm').value = settings.pricePerKm || 80;
+      document.getElementById('pricePerMinute').value = settings.pricePerMinute || 15;
+    }
+
+    async function addDriver() {
+      const name = document.getElementById('driverName').value.trim();
+      const vehicle = document.getElementById('driverVehicle').value.trim();
+      const phone = document.getElementById('driverPhone').value.trim();
+      if (!name) return toast('Unesite ime vozača');
+      await fetch('/api/drivers', {
+        method: 'POST', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ name, vehicle, phone })
+      });
+      document.getElementById('driverName').value = '';
+      document.getElementById('driverVehicle').value = '';
+      document.getElementById('driverPhone').value = '';
+      toast('Vozač dodat');
+    }
+
+    async function deleteDriver(id) {
+      await fetch('/api/drivers/' + id, { method: 'DELETE' });
+      toast('Vozač obrisan');
+    }
+
+    async function assignRide(rideId) {
+      const sel = document.getElementById('driverSelect-' + rideId);
+      if (!sel.value) return toast('Izaberite vozača');
+      await fetch('/api/rides/' + rideId + '/assign', {
+        method: 'POST', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ driverId: sel.value })
+      });
+      toast('Vozač dodeljen');
+    }
+
+    async function updateSettings() {
+      const body = {
+        baseFare: +document.getElementById('baseFare').value,
+        pricePerKm: +document.getElementById('pricePerKm').value,
+        pricePerMinute: +document.getElementById('pricePerMinute').value,
+      };
+      await fetch('/api/settings', {
+        method: 'POST', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify(body)
+      });
+      toast('Tarifa ažurirana');
+    }
+
+    socket.on('init', (data) => {
+      drivers = data.drivers; rides = data.rides; settings = data.settings;
+      renderDrivers(); renderRides(); renderSettings();
+    });
+    socket.on('drivers:updated', (data) => { drivers = data; renderDrivers(); });
+    socket.on('rides:updated', (data) => { rides = data; renderRides(); });
+    socket.on('ride:new', () => toast('🔔 Nova vožnja stigla!'));
+
+    window.addEventListener('resize', () => map.invalidateSize());
+  </script>
+</body>
+</html>

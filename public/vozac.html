@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html lang="sr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Vozač - Taksi Udruženje</title>
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+  <style>
+    body { height: 100vh; overflow: hidden; }
+    .layout {
+      display: grid;
+      grid-template-columns: 1fr 360px;
+      height: calc(100vh - 60px);
+    }
+    .col { padding: 16px; overflow-y: auto; }
+    #map { height: 100%; }
+  </style>
+</head>
+<body>
+  <header class="app-header">
+    <h1>🚖 Vozačka Aplikacija</h1>
+    <nav class="nav">
+      <a href="index.html">Početna</a>
+      <a href="dispecer.html">Dispečer</a>
+      <a href="vozac.html" class="active">Vozač</a>
+      <a href="korisnik.html">Korisnik</a>
+    </nav>
+  </header>
+
+  <div class="layout">
+    <div class="col" style="padding:0">
+      <div id="map"></div>
+    </div>
+
+    <div class="col">
+      <div class="card mb">
+        <h2>Status vozača</h2>
+        <div class="field">
+          <label>Izaberite vozača</label>
+          <select id="driverSelect" onchange="selectDriver()">
+            <option value="">— Izaberi —</option>
+          </select>
+        </div>
+        <div id="driverInfo" class="hidden">
+          <p class="muted">Status: <span id="driverStatus" class="badge offline">offline</span></p>
+          <div class="flex mt">
+            <button class="success" id="onlineBtn" onclick="goOnline()">🟢 Online</button>
+            <button class="danger" id="offlineBtn" onclick="goOffline()" disabled>🔴 Offline</button>
+          </div>
+          <p class="small muted mt">
+            Kada ste online, vaša pozicija se simulira i pomera po mapi.
+            (U pravoj Android aplikaciji, GPS sa telefona šalje poziciju.)
+          </p>
+        </div>
+      </div>
+
+      <div class="card mb">
+        <h2>Dodeljene vožnje</h2>
+        <div id="assignedRides"></div>
+      </div>
+
+      <div class="card">
+        <h2>Zarađeno danas</h2>
+        <h1 style="margin:0;color:var(--green)" id="earnings">0 RSD</h1>
+      </div>
+    </div>
+  </div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="/socket.io/socket.io.js"></script>
+  <script>
+    const socket = io();
+    let map, myMarker, routeLine = null;
+    let drivers = [], rides = [], currentDriver = null, earnings = 0;
+
+    map = L.map('map').setView([44.8125, 20.4612], 12);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      attribution: '© OpenStreetMap', maxZoom: 19
+    }).addTo(map);
+
+    const STATUS_RS = {
+      pending: 'Na čekanju', assigned: 'Dodeljena', accepted: 'Prihvaćena',
+      arrived: 'Stigao', started: 'U toku', completed: 'Završena', cancelled: 'Otkazana'
+    };
+
+    function toast(msg) {
+      const t = document.createElement('div');
+      t.className = 'toast';
+      t.textContent = msg;
+      document.body.appendChild(t);
+      setTimeout(() => t.remove(), 3000);
+    }
+
+    function renderDriverSelect() {
+      const sel = document.getElementById('driverSelect');
+      const prev = sel.value;
+      sel.innerHTML = '<option value="">— Izaberi —</option>' +
+        drivers.map(d => `<option value="${d.id}">${d.name} (${d.vehicle})</option>`).join('');
+      if (prev) sel.value = prev;
+    }
+
+    function selectDriver() {
+      const id = document.getElementById('driverSelect').value;
+      currentDriver = drivers.find(d => d.id === id) || null;
+      document.getElementById('driverInfo').classList.toggle('hidden', !currentDriver);
+      renderDriverInfo();
+      renderAssignedRides();
+    }
+
+    function renderDriverInfo() {
+      if (!currentDriver) return;
+      const statusEl = document.getElementById('driverStatus');
+      statusEl.textContent = currentDriver.status;
+      statusEl.className = 'badge ' + currentDriver.status;
+      document.getElementById('onlineBtn').disabled = (currentDriver.status !== 'offline');
+      document.getElementById('offlineBtn').disabled = (currentDriver.status === 'offline');
+
+      if (currentDriver.lat != null && currentDriver.lng != null) {
+        if (!myMarker) {
+          myMarker = L.marker([currentDriver.lat, currentDriver.lng]).addTo(map);
+          map.setView([currentDriver.lat, currentDriver.lng], 14);
+        } else {
+          myMarker.setLatLng([currentDriver.lat, currentDriver.lng]);
+        }
+      }
+    }
+
+    function renderAssignedRides() {
+      const el = document.getElementById('assignedRides');
+      if (!currentDriver) {
+        el.innerHTML = '<p class="muted">Izaberite vozača.</p>';
+        return;
+      }
+      const mine = rides.filter(r => r.driverId === currentDriver.id && !['completed','cancelled'].includes(r.status));
+      el.innerHTML = mine.map(r => `
+        <div class="ride-item" style="padding:10px;border:1px solid var(--border);border-radius:8px;margin-bottom:8px;background:var(--panel2)">
+          <div class="flex-between">
+            <span class="badge ${r.status}">${STATUS_RS[r.status]}</span>
+            <span class="small">${r.id}</span>
+          </div>
+          <div class="small muted">Putnik: ${r.passenger}</div>
+          <div class="small">${r.price} RSD</div>
+          <div class="mt">
+            ${r.status === 'assigned' ? `
+              <button class="success small" onclick="setStatus('${r.id}','accepted')">Prihvati</button>
+              <button class="danger small" onclick="setStatus('${r.id}','cancelled')">Odbij</button>` : ''}
+            ${r.status === 'accepted' ? `<button class="small" onclick="setStatus('${r.id}','arrived')">Stigao sam</button>` : ''}
+            ${r.status === 'arrived' ? `<button class="success small" onclick="setStatus('${r.id}','started')">▶ Počni vožnju</button>` : ''}
+            ${r.status === 'started' ? `<button class="success small" onclick="setStatus('${r.id}','completed')">✔ Završi vožnju</button>` : ''}
+          </div>
+        </div>
+      `).join('') || '<p class="muted">Nema dodeljenih vožnji.</p>';
+    }
+
+    function renderEarnings() {
+      document.getElementById('earnings').textContent = earnings + ' RSD';
+    }
+
+    async function goOnline() {
+      if (!currentDriver) return toast('Izaberite vozača');
+      const lat = 44.8125 + (Math.random() - 0.5) * 0.05;
+      const lng = 20.4612 + (Math.random() - 0.5) * 0.05;
+      currentDriver.lat = lat;
+      currentDriver.lng = lng;
+      socket.emit('driver:online', { driverId: currentDriver.id, lat, lng });
+      toast('Vozač je online!');
+    }
+
+    async function goOffline() {
+      if (!currentDriver) return;
+      socket.emit('driver:offline', { driverId: currentDriver.id });
+      toast('Vozač offline.');
+    }
+
+    async function setStatus(rideId, status) {
+      await fetch('/api/rides/' + rideId + '/status', {
+        method: 'POST', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ status })
+      });
+      if (status === 'completed') {
+        const r = rides.find(x => x.id === rideId);
+        if (r) earnings += r.price || 0;
+        renderEarnings();
+      }
+    }
+
+    // Simulacija kretanja - pomera marker vozača po Beogradu
+    function simulateMovement() {
+      if (!currentDriver || currentDriver.status === 'offline') return;
+      if (currentDriver.lat == null) return;
+      currentDriver.lat += (Math.random() - 0.5) * 0.004;
+      currentDriver.lng += (Math.random() - 0.5) * 0.004;
+      socket.emit('driver:location', {
+        driverId: currentDriver.id,
+        lat: currentDriver.lat,
+        lng: currentDriver.lng
+      });
+      if (myMarker) {
+        myMarker.setLatLng([currentDriver.lat, currentDriver.lng]);
+      }
+    }
+
+    setInterval(simulateMovement, 2000);
+
+    socket.on('init', (data) => {
+      drivers = data.drivers; rides = data.rides;
+      renderDriverSelect();
+    });
+    socket.on('drivers:updated', (data) => {
+      drivers = data;
+      renderDriverSelect();
+      const prev = document.getElementById('driverSelect').value;
+      if (prev) {
+        currentDriver = drivers.find(d => d.id === prev) || null;
+        renderDriverInfo();
+      }
+      renderAssignedRides();
+    });
+    socket.on('rides:updated', (data) => { rides = data; renderAssignedRides(); });
+    socket.on('ride:assigned', ({ rideId, driverId }) => {
+      if (currentDriver && currentDriver.id === driverId) {
+        toast('🔔 Nova vožnja dodeljena!');
+      }
+    });
+
+    window.addEventListener('resize', () => map.invalidateSize());
+  </script>
+</body>
+</html>

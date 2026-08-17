@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="sr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Korisnik - Naruči vožnju</title>
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+  <style>
+    body { height: 100vh; overflow: hidden; }
+    .layout {
+      display: grid;
+      grid-template-columns: 1fr 380px;
+      height: calc(100vh - 60px);
+    }
+    .col { padding: 16px; overflow-y: auto; }
+    #map { height: 100%; }
+    .step { display: none; }
+    .step.active { display: block; }
+  </style>
+</head>
+<body>
+  <header class="app-header">
+    <h1>🚕 Naruči Vožnju</h1>
+    <nav class="nav">
+      <a href="index.html">Početna</a>
+      <a href="dispecer.html">Dispečer</a>
+      <a href="vozac.html">Vozač</a>
+      <a href="korisnik.html" class="active">Korisnik</a>
+    </nav>
+  </header>
+
+  <div class="layout">
+    <div class="col" style="padding:0">
+      <div id="map"></div>
+    </div>
+
+    <div class="col">
+      <!-- KORAK 1: Unos adresa -->
+      <div id="step1" class="step active">
+        <div class="card">
+          <h2>Gde putujete?</h2>
+          <div class="field">
+            <label>Vaše ime</label>
+            <input type="text" id="passengerName" placeholder="npr. Marko Marković">
+          </div>
+          <div class="field">
+            <label>Polazak (kliknite na mapu za odabir)</label>
+            <button class="secondary" style="width:100%" onclick="pickMode='from'; toast('Kliknite na mapu za polazak')">📍 Postavi polazak</button>
+            <input type="text" id="fromLabel" placeholder="Polazak" readonly>
+          </div>
+          <div class="field">
+            <label>Destinacija (kliknite na mapu za odabir)</label>
+            <button class="secondary" style="width:100%" onclick="pickMode='to'; toast('Kliknite na mapu za destinaciju')">📍 Postavi destinaciju</button>
+            <input type="text" id="toLabel" placeholder="Destinacija" readonly>
+          </div>
+          <button style="width:100%" onclick="estimate()">💰 Izračunaj cenu</button>
+          <div id="estimateResult" class="mt"></div>
+        </div>
+      </div>
+
+      <!-- KORAK 2: Potvrda narudžbine -->
+      <div id="step2" class="step">
+        <div class="card">
+          <h2>Potvrdite narudžbinu</h2>
+          <div id="orderSummary"></div>
+          <button class="success" style="width:100%" onclick="orderRide()">✅ Naruči vožnju</button>
+          <button class="secondary" style="width:100%" onclick="step(1)">← Nazad</button>
+        </div>
+      </div>
+
+      <!-- KORAK 3: Praćenje -->
+      <div id="step3" class="step">
+        <div class="card">
+          <h2>Vožnja je naručena!</h2>
+          <p class="muted">Status: <span id="rideStatus" class="badge pending">Na čekanju</span></p>
+          <div id="trackingInfo"></div>
+          <div id="driverAssigned" class="mt"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="/socket.io/socket.io.js"></script>
+  <script>
+    const socket = io();
+    let map, fromMarker, toMarker, driverMarker;
+    let pickMode = 'from'; // 'from' | 'to' | null
+    let from = null, to = null, estimateData = null, currentRide = null;
+    let drivers = [], rides = [];
+
+    map = L.map('map').setView([44.8125, 20.4612], 13);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      attribution: '© OpenStreetMap', maxZoom: 19
+    }).addTo(map);
+
+    map.on('click', function(e) {
+      if (!pickMode) return;
+      const pos = { lat: e.latlng.lat, lng: e.latlng.lng };
+      if (pickMode === 'from') {
+        from = pos;
+        document.getElementById('fromLabel').value = pos.lat.toFixed(5) + ', ' + pos.lng.toFixed(5);
+        if (fromMarker) map.removeLayer(fromMarker);
+        fromMarker = L.marker([pos.lat, pos.lng], { draggable: false }).addTo(map)
+          .bindPopup('Polazak').openPopup();
+      } else if (pickMode === 'to') {
+        to = pos;
+        document.getElementById('toLabel').value = pos.lat.toFixed(5) + ', ' + pos.lng.toFixed(5);
+        if (toMarker) map.removeLayer(toMarker);
+        toMarker = L.marker([pos.lat, pos.lng], { draggable: false }).addTo(map)
+          .bindPopup('Destinacija').openPopup();
+        if (from) {
+          // Prikaži liniju rute (približno)
+          map.fitBounds([
+            [from.lat, from.lng],
+            [to.lat, to.lng]
+          ], { padding: [30, 30] });
+        }
+      }
+      pickMode = null;
+    });
+
+    function toast(msg) {
+      const t = document.createElement('div');
+      t.className = 'toast';
+      t.textContent = msg;
+      document.body.appendChild(t);
+      setTimeout(() => t.remove(), 3000);
+    }
+
+    function step(n) {
+      document.querySelectorAll('.step').forEach(s => s.classList.remove('active'));
+      document.getElementById('step' + n).classList.add('active');
+    }
+
+    async function estimate() {
+      if (!from || !to) return toast('Postavite polazak i destinaciju na mapu');
+      const res = await fetch('/api/rides/estimate', {
+        method: 'POST', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ from, to })
+      });
+      estimateData = await res.json();
+      document.getElementById('estimateResult').innerHTML = `
+        <div class="card" style="background:var(--bg);margin-top:10px">
+          <p>📏 Udaljenost: <b>${estimateData.distanceKm} km</b></p>
+          <p>⏱ Trajanje: <b>~${estimateData.durationMin} min</b></p>
+          <h2 style="color:var(--accent);margin:10px 0">${estimateData.price} RSD</h2>
+        </div>
+      `;
+      step(2);
+      renderOrderSummary();
+    }
+
+    function renderOrderSummary() {
+      const name = document.getElementById('passengerName').value.trim() || 'Anoniman';
+      document.getElementById('orderSummary').innerHTML = `
+        <p>👤 <b>${name}</b></p>
+        <p>📍 Polazak: ${from.lat.toFixed(4)}, ${from.lng.toFixed(4)}</p>
+        <p>🎯 Destinacija: ${to.lat.toFixed(4)}, ${to.lng.toFixed(4)}</p>
+        <p>💰 Cena: <b>${estimateData.price} RSD</b></p>
+        <p>📏 ${estimateData.distanceKm} km, ~${estimateData.durationMin} min</p>
+      `;
+    }
+
+    async function orderRide() {
+      const name = document.getElementById('passengerName').value.trim() || 'Anoniman';
+      const res = await fetch('/api/rides', {
+        method: 'POST', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({
+          passenger: name,
+          from, to,
+          distanceKm: estimateData.distanceKm,
+          durationMin: estimateData.durationMin,
+          price: estimateData.price
+        })
+      });
+      currentRide = await res.json();
+      step(3);
+      renderTracking();
+    }
+
+    function renderTracking() {
+      if (!currentRide) return;
+      const s = currentRide.status;
+      const statusMap = {
+        pending: 'Na čekanju', assigned: 'Dodeljena', accepted: 'Prihvaćena',
+        arrived: 'Vozač je stigao', started: 'U toku', completed: 'Završena', cancelled: 'Otkazana'
+      };
+      document.getElementById('rideStatus').textContent = statusMap[s] || s;
+      document.getElementById('rideStatus').className = 'badge ' + s;
+
+      if (currentRide.driverId) {
+        const driver = drivers.find(d => d.id === currentRide.driverId);
+        if (driver) {
+          document.getElementById('driverAssigned').innerHTML = `
+            <div class="card" style="background:var(--bg);margin-top:10px">
+              <h3>Vaš vozač</h3>
+              <p>👤 <b>${driver.name}</b></p>
+              <p>🚗 ${driver.vehicle}</p>
+              <p>📞 ${driver.phone || 'Nema'}</p>
+            </div>
+          `;
+          // Prikaži vozača na mapi
+          if (driver.lat != null && driver.lng != null) {
+            if (driverMarker) map.removeLayer(driverMarker);
+            driverMarker = L.marker([driver.lat, driver.lng]).addTo(map)
+              .bindPopup('Vozač: ' + driver.name).openPopup();
+          }
+        }
+      } else {
+        document.getElementById('driverAssigned').innerHTML = `
+          <p class="muted">Čekamo dodelu vozača (dispečer)...</p>
+        `;
+      }
+    }
+
+    socket.on('init', (data) => {
+      drivers = data.drivers; rides = data.rides;
+    });
+    socket.on('drivers:updated', (data) => {
+      drivers = data;
+      if (currentRide) renderTracking();
+    });
+    socket.on('rides:updated', (data) => {
+      rides = data;
+      if (currentRide) {
+        const updated = rides.find(r => r.id === currentRide.id);
+        if (updated) { currentRide = updated; renderTracking(); }
+      }
+    });
+
+    window.addEventListener('resize', () => map.invalidateSize());
+  </script>
+</body>
+</html>
