@@ -13,7 +13,7 @@ const DATA_DIR = path.join(__dirname, 'data');
 const DRIVERS_FILE = path.join(DATA_DIR, 'drivers.json');
 const RIDES_FILE = path.join(DATA_DIR, 'rides.json');
 
-// ---- Storage helpers (JSON file na disku) ----
+// ---- Storage helpers (JSON fajl na disku) ----
 function ensureData() {
   if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
   if (!fs.existsSync(DRIVERS_FILE)) fs.writeFileSync(DRIVERS_FILE, '[]');
@@ -44,7 +44,10 @@ function saveRides(rides) {
 const drivers = loadDrivers();
 const rides = loadRides();
 
-// Default vozila/brojila koje dispečer može konfigurisati
+// Mapiranje socket konekcija vozača: driverId -> socket.id
+const driverSockets = {};
+
+// Default tarifa koju dispečer može konfigurisati
 const SETTINGS = {
   baseFare: 200,          // RSD
   pricePerKm: 80,         // RSD
@@ -93,18 +96,19 @@ app.post('/api/settings', (req, res) => {
   res.json(SETTINGS);
 });
 
-// Vozači
+// ---- Vozači ----
 app.get('/api/drivers', (req, res) => res.json(drivers));
 
 app.post('/api/drivers', (req, res) => {
-  const { name, vehicle, phone } = req.body || {};
+  const { name, vehicle, plate, phone } = req.body || {};
   if (!name) return res.status(400).json({ error: 'Ime je obavezno' });
   const driver = {
     id: nextId('d', drivers),
     name,
     vehicle: vehicle || '',
+    plate: plate || '',
     phone: phone || '',
-    status: 'offline', // offline | available | busy
+    status: 'offline', // offline | available | enroute | busy
     lat: null,
     lng: null,
     createdAt: new Date().toISOString(),
@@ -124,16 +128,7 @@ app.delete('/api/drivers/:id', (req, res) => {
   res.json({ ok: true });
 });
 
-app.post('/api/drivers/:id/status', (req, res) => {
-  const d = drivers.find(x => x.id === req.params.id);
-  if (!d) return res.status(404).json({ error: 'Vozač ne postoji' });
-  d.status = req.body.status || d.status;
-  saveDrivers(drivers);
-  io.emit('drivers:updated', drivers);
-  res.json(d);
-});
-
-// Vožnje
+// ---- Vožnje ----
 app.get('/api/rides', (req, res) => res.json(rides));
 
 app.post('/api/rides/estimate', (req, res) => {
@@ -148,62 +143,151 @@ app.post('/api/rides/estimate', (req, res) => {
   });
 });
 
+// Kreiranje vožnje + automatsko slanje ponuda slobodnim vozačima
 app.post('/api/rides', (req, res) => {
-  const { passenger, from, to, distanceKm, durationMin, price } = req.body || {};
+  const { passenger, from, to, distanceKm, durationMin, price, passengers } = req.body || {};
   if (!passenger || !from || !to) return res.status(400).json({ error: 'Nedostaju podaci' });
+
   const ride = {
     id: nextId('r', rides),
     passenger,
+    passengers: passengers || 1,
     from,
     to,
     distanceKm: distanceKm || 0,
     durationMin: durationMin || 0,
     price: price || 0,
-    status: 'pending', // pending | assigned | accepted | arrived | started | completed | cancelled
+    status: 'pending', // pending | offering | accepted | arrived | started | completed | cancelled
     driverId: null,
+    rejectedBy: [],       // driverId koji su odbili ponudu
     createdAt: new Date().toISOString(),
     history: [{ status: 'pending', at: new Date().toISOString() }],
   };
+
   rides.push(ride);
   saveRides(rides);
   io.emit('rides:updated', rides);
-  io.emit('ride:new', ride);
+
+  // Automatski pošalji ponudu svim online i slobodnim vozačima
+  const available = drivers.filter(d => d.status === 'available');
+  if (available.length > 0) {
+    ride.status = 'offering';
+    ride.history.push({ status: 'offering', at: new Date().toISOString() });
+    saveRides(rides);
+    io.emit('rides:updated', rides);
+
+    for (const d of available) {
+      const socketId = driverSockets[d.id];
+      if (socketId) {
+        io.to(socketId).emit('ride:offer', ride);
+      }
+    }
+    // Ponuda ističe posle 25 sekundi ako niko ne prihvati
+    setTimeout(() => {
+      const r = rides.find(x => x.id === ride.id);
+      if (r && r.status === 'offering') {
+        // Ako niko nije prihvatio, sačuvaj kao pending za ručnu dodelu
+        r.status = 'pending';
+        r.history.push({ status: 'pending', at: new Date().toISOString() });
+        saveRides(rides);
+        io.emit('rides:updated', rides);
+        io.emit('ride:offers_expired', { rideId: ride.id });
+      }
+    }, 25000);
+  }
+
   res.json(ride);
 });
 
+// Vozač prihvata ponudu
+app.post('/api/rides/:id/accept', (req, res) => {
+  const ride = rides.find(r => r.id === req.params.id);
+  if (!ride) return res.status(404).json({ error: 'Vožnja ne postoji' });
+  if (!['pending', 'offering'].includes(ride.status)) {
+    return res.status(400).json({ error: 'Vožnja je već dodeljena' });
+  }
+  const driverId = req.body.driverId;
+  const driver = drivers.find(d => d.id === driverId);
+  if (!driver) return res.status(400).json({ error: 'Vozač ne postoji' });
+  if (driver.status !== 'available') {
+    return res.status(400).json({ error: 'Vozač nije dostupan' });
+  }
+
+  ride.driverId = driverId;
+  ride.status = 'accepted';
+  ride.history.push({ status: 'accepted', at: new Date().toISOString() });
+  driver.status = 'enroute'; // vozač je krenuo ka korisniku
+  saveRides(rides);
+  saveDrivers(drivers);
+
+  io.emit('rides:updated', rides);
+  io.emit('drivers:updated', drivers);
+  io.emit('ride:status', { rideId: ride.id, status: 'accepted', driverId });
+  // Obavesti ostale vozače da je ponuda istekla
+  for (const d of drivers) {
+    if (d.id !== driverId && driverSockets[d.id]) {
+      io.to(driverSockets[d.id]).emit('ride:offer_expired', { rideId: ride.id });
+    }
+  }
+  res.json(ride);
+});
+
+// Vozač odbija ponudu
+app.post('/api/rides/:id/reject', (req, res) => {
+  const ride = rides.find(r => r.id === req.params.id);
+  if (!ride) return res.status(404).json({ error: 'Vožnja ne postoji' });
+  const driverId = req.body.driverId;
+  if (!ride.rejectedBy.includes(driverId)) {
+    ride.rejectedBy.push(driverId);
+  }
+  saveRides(rides);
+  res.json(ride);
+});
+
+// Ručna dodela od strane dispečera (fallback)
 app.post('/api/rides/:id/assign', (req, res) => {
   const ride = rides.find(r => r.id === req.params.id);
   if (!ride) return res.status(404).json({ error: 'Vožnja ne postoji' });
   const driverId = req.body.driverId;
   const driver = drivers.find(d => d.id === driverId);
   if (!driver) return res.status(400).json({ error: 'Vozač ne postoji' });
+  if (!['available', 'offline'].includes(driver.status)) {
+    return res.status(400).json({ error: 'Vozač nije slobodan' });
+  }
+
   ride.driverId = driverId;
-  ride.status = 'assigned';
-  ride.history.push({ status: 'assigned', at: new Date().toISOString() });
-  driver.status = 'busy';
+  ride.status = 'accepted';
+  ride.history.push({ status: 'accepted', at: new Date().toISOString() });
+  driver.status = 'enroute';
   saveRides(rides);
   saveDrivers(drivers);
+
   io.emit('rides:updated', rides);
   io.emit('drivers:updated', drivers);
-  io.emit('ride:assigned', { rideId: ride.id, driverId });
+  io.emit('ride:status', { rideId: ride.id, status: 'accepted', driverId });
   res.json(ride);
 });
 
+// Promena statusa vožnje (arrived / started / completed / cancelled)
 app.post('/api/rides/:id/status', (req, res) => {
   const ride = rides.find(r => r.id === req.params.id);
   if (!ride) return res.status(404).json({ error: 'Vožnja ne postoji' });
   const status = req.body.status;
-  const valid = ['accepted', 'arrived', 'started', 'completed', 'cancelled'];
+  const valid = ['arrived', 'started', 'completed', 'cancelled'];
   if (!valid.includes(status)) return res.status(400).json({ error: 'Nepoznat status' });
 
   ride.status = status;
   ride.history.push({ status, at: new Date().toISOString() });
 
   const driver = drivers.find(d => d.id === ride.driverId);
-  if (status === 'completed' || status === 'cancelled') {
-    if (driver) driver.status = 'available';
-  } else {
-    if (driver) driver.status = 'busy';
+  if (driver) {
+    if (status === 'completed' || status === 'cancelled') {
+      driver.status = 'available'; // oslobodi vozilo
+    } else if (status === 'arrived') {
+      driver.status = 'busy'; // stigao na mesto preuzimanja
+    } else if (status === 'started') {
+      driver.status = 'busy'; // vožnja u toku
+    }
   }
 
   saveRides(rides);
@@ -218,16 +302,10 @@ app.post('/api/rides/:id/status', (req, res) => {
 io.on('connection', (socket) => {
   socket.emit('init', { drivers, rides, settings: SETTINGS });
 
-  // Vozač šalje svoju poziciju
-  socket.on('driver:location', (data) => {
-    const driver = drivers.find(d => d.id === data.driverId);
-    if (driver) {
-      driver.lat = data.lat;
-      driver.lng = data.lng;
-      // Ako nije zauzet, po defaultu je dostupan kada šalje poziciju
-      if (driver.status === 'offline') driver.status = 'available';
-      saveDrivers(drivers);
-      io.emit('drivers:updated', drivers);
+  // Vozač se registruje (veza između driverId i socket-a)
+  socket.on('driver:register', (data) => {
+    if (data && data.driverId) {
+      driverSockets[data.driverId] = socket.id;
     }
   });
 
@@ -250,11 +328,30 @@ io.on('connection', (socket) => {
       io.emit('drivers:updated', drivers);
     }
   });
+
+  socket.on('driver:location', (data) => {
+    const driver = drivers.find(d => d.id === data.driverId);
+    if (driver) {
+      driver.lat = data.lat;
+      driver.lng = data.lng;
+      if (driver.status === 'offline') driver.status = 'available';
+      saveDrivers(drivers);
+      io.emit('drivers:updated', drivers);
+    }
+  });
+
+  socket.on('disconnect', () => {
+    for (const [driverId, sockId] of Object.entries(driverSockets)) {
+      if (sockId === socket.id) {
+        delete driverSockets[driverId];
+      }
+    }
+  });
 });
 
 server.listen(PORT, () => {
   console.log(`✅ Taksi udruženje server pokrenut na http://localhost:${PORT}`);
   console.log(`   Dispečer panel:  http://localhost:${PORT}/dispecer.html`);
-  console.log(`   Vozač simulator: http://localhost:${PORT}/vozac.html`);
+  console.log(`   Vozač:           http://localhost:${PORT}/vozac.html`);
   console.log(`   Korisnik:        http://localhost:${PORT}/korisnik.html`);
 });

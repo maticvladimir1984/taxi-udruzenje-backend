@@ -24,6 +24,9 @@
       margin-bottom: 8px;
       background: var(--panel2);
     }
+    @media (max-width: 900px) {
+      .layout { grid-template-columns: 1fr; grid-template-rows: auto 50% auto; }
+    }
   </style>
 </head>
 <body>
@@ -35,20 +38,23 @@
   <div class="layout">
     <!-- Leva kolona: vozači -->
     <div class="col">
-      <div class="flex-between mb">
-        <h2 style="margin:0">Vozači</h2>
-      </div>
+      <h2 style="margin:0 0 8px 0">Dodaj vozača</h2>
       <div class="field">
         <input type="text" id="driverName" placeholder="Ime vozača">
       </div>
       <div class="field">
-        <input type="text" id="driverVehicle" placeholder="Vozilo (npr. BG-123-AB)">
+        <input type="text" id="driverVehicle" placeholder="Model vozila (npr. Škoda Octavia)">
+      </div>
+      <div class="field">
+        <input type="text" id="driverPlate" placeholder="Registracija (npr. BG-123-AB)">
       </div>
       <div class="field">
         <input type="text" id="driverPhone" placeholder="Telefon">
       </div>
       <button class="success" style="width:100%" onclick="addDriver()">+ Dodaj vozača</button>
-      <div id="driversList" class="mt"></div>
+      <hr style="border-color:var(--border);margin:16px 0">
+      <h2 style="margin:0 0 8px 0">Vozači u floti</h2>
+      <div id="driversList"></div>
     </div>
 
     <!-- Srednja kolona: mapa -->
@@ -77,7 +83,7 @@
   <script src="/socket.io/socket.io.js"></script>
   <script>
     const socket = io();
-    let map, markers = {};
+    let map, driverMarkers = {}, passengerMarkers = {};
     let drivers = [], rides = [], settings = {};
 
     // Mapa (centar: Beograd)
@@ -88,10 +94,10 @@
     }).addTo(map);
 
     const STATUS_RS = {
-      pending: 'Na čekanju', assigned: 'Dodeljena', accepted: 'Prihvaćena',
+      pending: 'Na čekanju', offering: 'Ponuda poslata', accepted: 'Prihvaćena',
       arrived: 'Stigao', started: 'U toku', completed: 'Završena', cancelled: 'Otkazana'
     };
-    const DRIVER_STATUS_RS = { offline: 'Offline', available: 'Dostupan', busy: 'Zauzet' };
+    const DRIVER_STATUS_RS = { offline: 'Offline', available: 'Dostupan', enroute: 'Vozi ka korisniku', busy: 'Zauzet' };
 
     function toast(msg) {
       const t = document.createElement('div');
@@ -99,6 +105,13 @@
       t.textContent = msg;
       document.body.appendChild(t);
       setTimeout(() => t.remove(), 3000);
+    }
+
+    function driverColor(status) {
+      if (status === 'available') return '#22c55e';
+      if (status === 'enroute') return '#f59e0b';
+      if (status === 'busy') return '#ef4444';
+      return '#64748b'; // offline
     }
 
     function renderDrivers() {
@@ -109,31 +122,32 @@
             <strong>${d.name}</strong>
             <span class="badge ${d.status}">${DRIVER_STATUS_RS[d.status] || d.status}</span>
           </div>
-          <div class="small muted">${d.vehicle} ${d.phone}</div>
-          <div class="small muted">ID: ${d.id}</div>
+          <div class="small muted">${d.vehicle} · ${d.plate || 'n/a'}</div>
+          <div class="small muted">📞 ${d.phone || '—'}</div>
           <div class="mt flex">
-            <button class="secondary small" onclick="deleteDriver('${d.id}')">Obriši</button>
+            <button class="danger small" onclick="deleteDriver('${d.id}')">Obriši</button>
           </div>
         </div>
       `).join('') || '<p class="muted">Nema vozača. Dodajte prvog.</p>';
 
-      // Ažuriraj markere na mapi
+      // Ažuriraj markere vozača
       const ids = new Set(drivers.map(d => d.id));
-      for (const id in markers) {
-        if (!ids.has(id)) { map.removeLayer(markers[id]); delete markers[id]; }
+      for (const id in driverMarkers) {
+        if (!ids.has(id)) { map.removeLayer(driverMarkers[id]); delete driverMarkers[id]; }
       }
       drivers.forEach(d => {
         if (d.lat != null && d.lng != null) {
           const icon = L.divIcon({
             className: '',
-            html: `<div style="background:${d.status === 'busy' ? '#f59e0b' : d.status === 'available' ? '#22c55e' : '#64748b'};width:16px;height:16px;border-radius:50%;border:2px solid white;"></div>`,
+            html: `<div style="background:${driverColor(d.status)};width:16px;height:16px;border-radius:50%;border:2px solid white;"></div>`,
             iconSize: [16,16], iconAnchor: [8,8]
           });
-          if (markers[d.id]) {
-            markers[d.id].setLatLng([d.lat, d.lng]);
+          if (driverMarkers[d.id]) {
+            driverMarkers[d.id].setLatLng([d.lat, d.lng]);
+            driverMarkers[d.id].setIcon(icon);
           } else {
-            markers[d.id] = L.marker([d.lat, d.lng], { icon }).addTo(map)
-              .bindPopup(`<b>${d.name}</b><br>${d.vehicle}<br>${DRIVER_STATUS_RS[d.status]}`);
+            driverMarkers[d.id] = L.marker([d.lat, d.lng], { icon }).addTo(map)
+              .bindPopup(`<b>${d.name}</b><br>${d.vehicle}<br>${d.plate || ''}<br>${DRIVER_STATUS_RS[d.status]}`);
           }
         }
       });
@@ -144,26 +158,48 @@
       const active = rides.filter(r => !['completed', 'cancelled'].includes(r.status));
       el.innerHTML = active.map(r => {
         const driver = drivers.find(d => d.id === r.driverId);
+        const waiting = ['pending', 'offering'].includes(r.status);
         return `
           <div class="ride-item">
             <div class="flex-between">
               <span class="badge ${r.status}">${STATUS_RS[r.status]}</span>
               <span class="small">${r.id}</span>
             </div>
+            <div class="small muted mt">👥 ${r.passengers || 1} putnika · ${r.price || 0} RSD</div>
             <div class="small muted">📍 ${(r.from?.lat ?? 0).toFixed(4)}, ${(r.from?.lng ?? 0).toFixed(4)}</div>
             <div class="small muted">🎯 ${(r.to?.lat ?? 0).toFixed(4)}, ${(r.to?.lng ?? 0).toFixed(4)}</div>
-            <div class="small">${r.price ? r.price + ' RSD' : ''}</div>
-            ${driver ? `<div class="small">Vozač: <b>${driver.name}</b></div>` : ''}
+            ${driver ? `<div class="small">Vozač: <b>${driver.name}</b> (${driver.vehicle})</div>` : ''}
             <div class="mt">
-              ${r.status === 'pending' ? `<select id="driverSelect-${r.id}" style="margin-bottom:6px">
+              ${waiting ? `<select id="driverSelect-${r.id}" style="margin-bottom:6px">
                 <option value="">— Izaberi vozača —</option>
                 ${drivers.filter(d => d.status === 'available' || d.status === 'offline').map(d => `<option value="${d.id}">${d.name} (${d.vehicle})</option>`).join('')}
               </select>
-              <button class="success small" style="width:100%" onclick="assignRide('${r.id}')">Dodeli vozača</button>` : ''}
+              <button class="warning small" style="width:100%;background:#f59e0b;color:#111" onclick="assignRide('${r.id}')">Dodeli vozača (ručno)</button>` : ''}
             </div>
           </div>
         `;
       }).join('') || '<p class="muted">Nema aktivnih vožnji.</p>';
+
+      // Markeri za korisnike koji čekaju (nije dodeljen vozač)
+      const waitingIds = new Set(active.filter(r => !r.driverId).map(r => r.id));
+      for (const id in passengerMarkers) {
+        if (!waitingIds.has(id)) { map.removeLayer(passengerMarkers[id]); delete passengerMarkers[id]; }
+      }
+      active.filter(r => !r.driverId).forEach(r => {
+        if (r.from && r.from.lat != null) {
+          const icon = L.divIcon({
+            className: '',
+            html: `<div style="background:#3b82f6;width:14px;height:14px;border-radius:50%;border:2px solid white;"></div>`,
+            iconSize: [14,14], iconAnchor: [7,7]
+          });
+          if (passengerMarkers[r.id]) {
+            passengerMarkers[r.id].setLatLng([r.from.lat, r.from.lng]);
+          } else {
+            passengerMarkers[r.id] = L.marker([r.from.lat, r.from.lng], { icon }).addTo(map)
+              .bindPopup(`<b>Korisnik čeka</b><br>${r.passenger || ''}<br>👥 ${r.passengers || 1} · ${r.price || 0} RSD`);
+          }
+        }
+      });
     }
 
     function renderSettings() {
@@ -175,14 +211,16 @@
     async function addDriver() {
       const name = document.getElementById('driverName').value.trim();
       const vehicle = document.getElementById('driverVehicle').value.trim();
+      const plate = document.getElementById('driverPlate').value.trim();
       const phone = document.getElementById('driverPhone').value.trim();
       if (!name) return toast('Unesite ime vozača');
       await fetch('/api/drivers', {
         method: 'POST', headers: {'Content-Type':'application/json'},
-        body: JSON.stringify({ name, vehicle, phone })
+        body: JSON.stringify({ name, vehicle, plate, phone })
       });
       document.getElementById('driverName').value = '';
       document.getElementById('driverVehicle').value = '';
+      document.getElementById('driverPlate').value = '';
       document.getElementById('driverPhone').value = '';
       toast('Vozač dodat');
     }
@@ -219,7 +257,7 @@
       drivers = data.drivers; rides = data.rides; settings = data.settings;
       renderDrivers(); renderRides(); renderSettings();
     });
-    socket.on('drivers:updated', (data) => { drivers = data; renderDrivers(); });
+    socket.on('drivers:updated', (data) => { drivers = data; renderDrivers(); renderRides(); });
     socket.on('rides:updated', (data) => { rides = data; renderRides(); });
     socket.on('ride:new', () => toast('🔔 Nova vožnja stigla!'));
 

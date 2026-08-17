@@ -8,61 +8,102 @@
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
   <style>
     body { height: 100vh; overflow: hidden; }
-    .layout {
-      display: grid;
-      grid-template-columns: 1fr 360px;
-      height: calc(100vh - 60px);
-    }
-    .col { padding: 16px; overflow-y: auto; }
     #map { height: 100%; }
+    .screen { display: none; position: fixed; inset: 60px 0 0 0; }
+    .screen.active { display: block; }
+
+    /* Login */
+    #loginScreen { display: flex; align-items: center; justify-content: center; background: var(--bg); }
+    .login-card { width: 360px; padding: 28px; background: var(--panel); border: 1px solid var(--border); border-radius: 16px; text-align: center; }
+    .login-card h2 { color: var(--accent); margin: 0 0 20px; }
+
+    /* Glavni ekran */
+    #mainScreen { display: none; }
+    #mainScreen.active { display: grid; grid-template-columns: 1fr 360px; }
+    #mainScreen .map-wrap { position: relative; }
+    #mainScreen .side { padding: 16px; overflow-y: auto; border-left: 1px solid var(--border); }
+    @media (max-width: 800px) {
+      #mainScreen.active { grid-template-columns: 1fr; grid-template-rows: 50% 50%; }
+      #mainScreen .side { border-left: none; border-top: 1px solid var(--border); }
+    }
+
+    .status-btn {
+      width: 100%; padding: 18px; border: none; border-radius: 12px;
+      font-size: 18px; font-weight: 700; cursor: pointer; color: white;
+    }
+    .status-btn.online { background: var(--green); }
+    .status-btn.offline { background: var(--red); }
+
+    .status-ribbon {
+      display: flex; align-items: center; gap: 10px; padding: 12px;
+      background: var(--panel2); border-radius: 10px; margin-bottom: 12px;
+      font-size: 15px;
+    }
+    .dot { width: 14px; height: 14px; border-radius: 50%; }
+    .dot.available { background: var(--green); }
+    .dot.offline { background: var(--muted); }
+    .dot.enroute { background: var(--accent); }
+    .dot.busy { background: var(--red); }
+
+    /* Ponuda */
+    .offer-card {
+      background: var(--panel); border: 2px solid var(--accent); border-radius: 14px;
+      padding: 18px; margin-bottom: 12px; animation: pulse 1.2s infinite;
+    }
+    @keyframes pulse {
+      0%,100% { box-shadow: 0 0 0 0 rgba(250,204,21,0.4); }
+      50% { box-shadow: 0 0 0 12px rgba(250,204,21,0); }
+    }
+    .offer-card h3 { color: var(--accent); margin: 0 0 8px; font-size: 18px; }
+    .offer-timer { font-size: 13px; color: var(--muted); }
+    .offer-actions { display: flex; gap: 10px; margin-top: 14px; }
+    .offer-actions button { flex: 1; padding: 14px; font-size: 16px; font-weight: 700; border: none; border-radius: 10px; cursor: pointer; }
+    .btn-accept { background: var(--green); color: white; }
+    .btn-reject { background: var(--red); color: white; }
+
+    .ride-card { background: var(--panel2); border: 1px solid var(--border); border-radius: 10px; padding: 12px; margin-bottom: 10px; }
+    .eta-line { font-size: 13px; color: var(--muted); margin-top: 6px; }
+    .big-stat { text-align: center; padding: 16px; background: var(--panel2); border-radius: 10px; }
+    .big-stat .value { font-size: 28px; font-weight: 700; color: var(--green); }
+    .big-stat .label { font-size: 12px; color: var(--muted); }
   </style>
 </head>
 <body>
-  <header class="app-header">
-    <h1>🚖 Vozačka Aplikacija</h1>
-    <nav class="nav">
-      <a href="index.html">Početna</a>
-      <a href="dispecer.html">Dispečer</a>
-      <a href="vozac.html" class="active">Vozač</a>
-      <a href="korisnik.html">Korisnik</a>
-    </nav>
+  <header class="app-header" style="height:60px">
+    <h1>🚖 Vozačka aplikacija</h1>
+    <span class="small muted" style="margin-left:auto" id="headerDriver"></span>
   </header>
 
-  <div class="layout">
-    <div class="col" style="padding:0">
+  <!-- LOGIN EKRAN -->
+  <div id="loginScreen" class="screen active">
+    <div class="login-card">
+      <h2>Prijava vozača</h2>
+      <p class="muted small">Izaberite vaš nalog (vozilo). Nalog vam je prethodno kreirao dispečer.</p>
+      <div class="field">
+        <select id="driverSelect">
+          <option value="">— Izaberite vozača/vozilo —</option>
+        </select>
+      </div>
+      <button class="status-btn online" onclick="login()">▶ Uđi</button>
+    </div>
+  </div>
+
+  <!-- GLAVNI EKRAN -->
+  <div id="mainScreen" class="screen">
+    <div class="map-wrap">
       <div id="map"></div>
     </div>
-
-    <div class="col">
-      <div class="card mb">
-        <h2>Status vozača</h2>
-        <div class="field">
-          <label>Izaberite vozača</label>
-          <select id="driverSelect" onchange="selectDriver()">
-            <option value="">— Izaberi —</option>
-          </select>
-        </div>
-        <div id="driverInfo" class="hidden">
-          <p class="muted">Status: <span id="driverStatus" class="badge offline">offline</span></p>
-          <div class="flex mt">
-            <button class="success" id="onlineBtn" onclick="goOnline()">🟢 Online</button>
-            <button class="danger" id="offlineBtn" onclick="goOffline()" disabled>🔴 Offline</button>
-          </div>
-          <p class="small muted mt">
-            Kada ste online, vaša pozicija se simulira i pomera po mapi.
-            (U pravoj Android aplikaciji, GPS sa telefona šalje poziciju.)
-          </p>
-        </div>
+    <div class="side">
+      <div class="status-ribbon">
+        <span class="dot" id="statusDot"></span>
+        <span id="statusText">Offline</span>
       </div>
-
-      <div class="card mb">
-        <h2>Dodeljene vožnje</h2>
-        <div id="assignedRides"></div>
-      </div>
-
-      <div class="card">
-        <h2>Zarađeno danas</h2>
-        <h1 style="margin:0;color:var(--green)" id="earnings">0 RSD</h1>
+      <button class="status-btn offline" id="statusBtn" onclick="toggleStatus()">🔴 OFFLINE — dodirni za online</button>
+      <div id="offerArea" class="mt"></div>
+      <div id="currentRideArea" class="mt"></div>
+      <div class="big-stat mt">
+        <div class="value" id="earnings">0 RSD</div>
+        <div class="label">Zarađeno danas</div>
       </div>
     </div>
   </div>
@@ -71,157 +112,251 @@
   <script src="/socket.io/socket.io.js"></script>
   <script>
     const socket = io();
-    let map, myMarker, routeLine = null;
+    let map, myMarker, routeLine = null, pickupMarker = null;
     let drivers = [], rides = [], currentDriver = null, earnings = 0;
+    let offerTimer = null;
 
-    map = L.map('map').setView([44.8125, 20.4612], 12);
+    // Mapa (centar: Beograd, kao podrazumevano)
+    map = L.map('map').setView([44.8125, 20.4612], 13);
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
       attribution: '© OpenStreetMap', maxZoom: 19
     }).addTo(map);
 
     const STATUS_RS = {
-      pending: 'Na čekanju', assigned: 'Dodeljena', accepted: 'Prihvaćena',
+      pending: 'Čeka dodelu', offering: 'Ponuda poslata', accepted: 'Prihvaćena',
       arrived: 'Stigao', started: 'U toku', completed: 'Završena', cancelled: 'Otkazana'
     };
+    const SELF_RS = { offline: 'Offline', available: 'Dostupan', enroute: 'Vozi ka korisniku', busy: 'Zauzet' };
 
     function toast(msg) {
       const t = document.createElement('div');
       t.className = 'toast';
       t.textContent = msg;
       document.body.appendChild(t);
-      setTimeout(() => t.remove(), 3000);
+      setTimeout(() => t.remove(), 3500);
     }
 
-    function renderDriverSelect() {
+    function renderDriversSelect() {
       const sel = document.getElementById('driverSelect');
       const prev = sel.value;
-      sel.innerHTML = '<option value="">— Izaberi —</option>' +
-        drivers.map(d => `<option value="${d.id}">${d.name} (${d.vehicle})</option>`).join('');
+      sel.innerHTML = '<option value="">— Izaberite vozača/vozilo —</option>' +
+        drivers.map(d => `<option value="${d.id}">${d.name} — ${d.vehicle} (${d.plate || 'n/a'})</option>`).join('');
       if (prev) sel.value = prev;
     }
 
-    function selectDriver() {
+    function login() {
       const id = document.getElementById('driverSelect').value;
-      currentDriver = drivers.find(d => d.id === id) || null;
-      document.getElementById('driverInfo').classList.toggle('hidden', !currentDriver);
-      renderDriverInfo();
-      renderAssignedRides();
+      if (!id) return toast('Izaberite vaš nalog');
+      currentDriver = drivers.find(d => d.id === id);
+      if (!currentDriver) return toast('Nalog nije pronađen');
+      socket.emit('driver:register', { driverId: currentDriver.id });
+      document.getElementById('headerDriver').textContent = currentDriver.name + ' — ' + currentDriver.vehicle;
+      document.getElementById('loginScreen').classList.remove('active');
+      document.getElementById('mainScreen').classList.add('active');
+      refreshSelf();
+      map.invalidateSize();
     }
 
-    function renderDriverInfo() {
+    function refreshSelf() {
       if (!currentDriver) return;
-      const statusEl = document.getElementById('driverStatus');
-      statusEl.textContent = currentDriver.status;
-      statusEl.className = 'badge ' + currentDriver.status;
-      document.getElementById('onlineBtn').disabled = (currentDriver.status !== 'offline');
-      document.getElementById('offlineBtn').disabled = (currentDriver.status === 'offline');
-
-      if (currentDriver.lat != null && currentDriver.lng != null) {
+      const d = drivers.find(x => x.id === currentDriver.id);
+      if (!d) return;
+      currentDriver = d;
+      const dot = document.getElementById('statusDot');
+      const txt = document.getElementById('statusText');
+      const btn = document.getElementById('statusBtn');
+      dot.className = 'dot ' + (d.status || 'offline');
+      txt.textContent = SELF_RS[d.status] || d.status;
+      if (d.status === 'available') {
+        btn.className = 'status-btn online';
+        btn.textContent = '🟢 ONLINE — dodirni za offline';
+      } else if (d.status === 'offline') {
+        btn.className = 'status-btn offline';
+        btn.textContent = '🔴 OFFLINE — dodirni za online';
+      } else {
+        btn.className = 'status-btn offline';
+        btn.textContent = '⏳ ' + (SELF_RS[d.status] || d.status);
+        btn.disabled = true;
+      }
+      // marker
+      if (d.lat != null && d.lng != null) {
         if (!myMarker) {
-          myMarker = L.marker([currentDriver.lat, currentDriver.lng]).addTo(map);
-          map.setView([currentDriver.lat, currentDriver.lng], 14);
+          myMarker = L.marker([d.lat, d.lng]).addTo(map);
+          map.setView([d.lat, d.lng], 14);
         } else {
-          myMarker.setLatLng([currentDriver.lat, currentDriver.lng]);
+          myMarker.setLatLng([d.lat, d.lng]);
         }
       }
+      renderCurrentRide();
     }
 
-    function renderAssignedRides() {
-      const el = document.getElementById('assignedRides');
-      if (!currentDriver) {
-        el.innerHTML = '<p class="muted">Izaberite vozača.</p>';
-        return;
+    function getSelfPos() {
+      if (currentDriver && currentDriver.lat != null) {
+        return { lat: currentDriver.lat, lng: currentDriver.lng };
       }
-      const mine = rides.filter(r => r.driverId === currentDriver.id && !['completed','cancelled'].includes(r.status));
-      el.innerHTML = mine.map(r => `
-        <div class="ride-item" style="padding:10px;border:1px solid var(--border);border-radius:8px;margin-bottom:8px;background:var(--panel2)">
-          <div class="flex-between">
-            <span class="badge ${r.status}">${STATUS_RS[r.status]}</span>
-            <span class="small">${r.id}</span>
+      return { lat: 44.8125, lng: 20.4612 };
+    }
+
+    function toggleStatus() {
+      if (!currentDriver) return;
+      if (currentDriver.status === 'available') {
+        socket.emit('driver:offline', { driverId: currentDriver.id });
+      } else if (currentDriver.status === 'offline') {
+        navigator.geolocation ? navigator.geolocation.getCurrentPosition(p => {
+          socket.emit('driver:online', { driverId: currentDriver.id, lat: p.coords.latitude, lng: p.coords.longitude });
+        }, () => {
+          const pos = getSelfPos();
+          socket.emit('driver:online', { driverId: currentDriver.id, lat: pos.lat, lng: pos.lng });
+        }) : (() => {
+          const pos = getSelfPos();
+          socket.emit('driver:online', { driverId: currentDriver.id, lat: pos.lat, lng: pos.lng });
+        })();
+      }
+    }
+
+    function setStatus(rideId, status) {
+      fetch('/api/rides/' + rideId + '/status', {
+        method: 'POST', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ status })
+      }).then(() => {
+        if (status === 'completed') {
+          const r = rides.find(x => x.id === rideId);
+          if (r) { earnings += r.price || 0; document.getElementById('earnings').textContent = earnings + ' RSD'; }
+          if (routeLine) { map.removeLayer(routeLine); routeLine = null; }
+          if (pickupMarker) { map.removeLayer(pickupMarker); pickupMarker = null; }
+        }
+      });
+    }
+
+    // ---- Ponuda ----
+    function showOffer(ride) {
+      const area = document.getElementById('offerArea');
+      // Odbroj 25 sekundi
+      let remaining = 25;
+      area.innerHTML = `
+        <div class="offer-card">
+          <h3>🚕 Nova vožnja!</h3>
+          <div class="small muted">📏 ${ride.distanceKm} km · ⏱ ~${ride.durationMin} min</div>
+          <div class="small muted">👥 ${ride.passengers || 1} putnika</div>
+          <div class="small mt">📍 ${ride.from.lat.toFixed(4)}, ${ride.from.lng.toFixed(4)}</div>
+          <div class="small">🎯 ${ride.to.lat.toFixed(4)}, ${ride.to.lng.toFixed(4)}</div>
+          <div class="mt" style="font-size:22px;font-weight:700;color:var(--accent)">${ride.price} RSD</div>
+          <div class="offer-timer">Ponuda ističe za <b id="offerCountdown">${remaining}</b>s</div>
+          <div class="offer-actions">
+            <button class="btn-accept" onclick="acceptOffer('${ride.id}')">✅ Prihvati</button>
+            <button class="btn-reject" onclick="rejectOffer('${ride.id}')">✖ Odbij</button>
           </div>
-          <div class="small muted">Putnik: ${r.passenger}</div>
-          <div class="small">${r.price} RSD</div>
-          <div class="mt">
-            ${r.status === 'assigned' ? `
-              <button class="success small" onclick="setStatus('${r.id}','accepted')">Prihvati</button>
-              <button class="danger small" onclick="setStatus('${r.id}','cancelled')">Odbij</button>` : ''}
-            ${r.status === 'accepted' ? `<button class="small" onclick="setStatus('${r.id}','arrived')">Stigao sam</button>` : ''}
+        </div>
+      `;
+      offerTimer = setInterval(() => {
+        remaining--;
+        const el = document.getElementById('offerCountdown');
+        if (el) el.textContent = remaining;
+        if (remaining <= 0) {
+          clearInterval(offerTimer);
+          document.getElementById('offerArea').innerHTML = '';
+        }
+      }, 1000);
+    }
+
+    function acceptOffer(rideId) {
+      clearInterval(offerTimer);
+      fetch('/api/rides/' + rideId + '/accept', {
+        method: 'POST', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ driverId: currentDriver.id })
+      }).then(() => {
+        document.getElementById('offerArea').innerHTML = '';
+        toast('Vožnja prihvaćena!');
+        drawRouteToPickup();
+      });
+    }
+
+    function rejectOffer(rideId) {
+      clearInterval(offerTimer);
+      fetch('/api/rides/' + rideId + '/reject', {
+        method: 'POST', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ driverId: currentDriver.id })
+      });
+      document.getElementById('offerArea').innerHTML = '';
+    }
+
+    // ---- Aktivna vožnja ----
+    function renderCurrentRide() {
+      const area = document.getElementById('currentRideArea');
+      if (!currentDriver) return;
+      const mine = rides.filter(r => r.driverId === currentDriver.id && !['completed','cancelled'].includes(r.status));
+      area.innerHTML = mine.map(r => `
+        <div class="ride-card">
+          <div class="flex-between">
+            <span class="badge ${r.status}">${STATUS_RS[r.status] || r.status}</span>
+            <span class="small muted">${r.price} RSD</span>
+          </div>
+          <div class="small muted mt">👥 ${r.passengers || 1} putnika</div>
+          <div class="small">📍 ${r.from.lat.toFixed(4)}, ${r.from.lng.toFixed(4)}</div>
+          <div class="small">🎯 ${r.to.lat.toFixed(4)}, ${r.to.lng.toFixed(4)}</div>
+          <div class="flex mt">
+            ${r.status === 'accepted' ? `<button class="success small" onclick="setStatus('${r.id}','arrived')">📦 Pokupio putnika</button>` : ''}
             ${r.status === 'arrived' ? `<button class="success small" onclick="setStatus('${r.id}','started')">▶ Počni vožnju</button>` : ''}
             ${r.status === 'started' ? `<button class="success small" onclick="setStatus('${r.id}','completed')">✔ Završi vožnju</button>` : ''}
           </div>
         </div>
-      `).join('') || '<p class="muted">Nema dodeljenih vožnji.</p>';
+      `).join('') || '<p class="muted">Nema aktivne vožnje.</p>';
     }
 
-    function renderEarnings() {
-      document.getElementById('earnings').textContent = earnings + ' RSD';
+    // ---- Navigacija (OSRM besplatna ruta) ----
+    function drawRouteToPickup() {
+      const mine = rides.find(r => r.driverId === currentDriver.id && r.status === 'accepted');
+      if (!mine) return;
+      const from = getSelfPos();
+      const to = mine.from;
+      // marker preuzimanja
+      if (pickupMarker) map.removeLayer(pickupMarker);
+      pickupMarker = L.marker([to.lat, to.lng]).addTo(map).bindPopup('Preuzimanje putnika').openPopup();
+      fetch(`https://router.project-osrm.org/route/v1/driving/${from.lng},${from.lat};${to.lng},${to.lat}?overview=full&geometries=geojson`)
+        .then(r => r.json())
+        .then(data => {
+          if (data.routes && data.routes[0]) {
+            const coords = data.routes[0].geometry.coordinates.map(c => [c[1], c[0]]);
+            if (routeLine) map.removeLayer(routeLine);
+            routeLine = L.polyline(coords, { color: '#3b82f6', weight: 5 }).addTo(map);
+            map.fitBounds(routeLine.getBounds(), { padding: [40, 40] });
+            const dur = Math.round(data.routes[0].duration / 60);
+            const dist = (data.routes[0].distance / 1000).toFixed(1);
+            toast(`Ruta do putnika: ${dist} km, ~${dur} min`);
+          }
+        })
+        .catch(() => {
+          // fallback: prava linija
+          if (routeLine) map.removeLayer(routeLine);
+          routeLine = L.polyline([[from.lat, from.lng], [to.lat, to.lng]], { color: '#3b82f6', weight: 5, dashArray: '6,6' }).addTo(map);
+          map.fitBounds(routeLine.getBounds(), { padding: [40, 40] });
+        });
     }
 
-    async function goOnline() {
-      if (!currentDriver) return toast('Izaberite vozača');
-      const lat = 44.8125 + (Math.random() - 0.5) * 0.05;
-      const lng = 20.4612 + (Math.random() - 0.5) * 0.05;
-      currentDriver.lat = lat;
-      currentDriver.lng = lng;
-      socket.emit('driver:online', { driverId: currentDriver.id, lat, lng });
-      toast('Vozač je online!');
-    }
-
-    async function goOffline() {
-      if (!currentDriver) return;
-      socket.emit('driver:offline', { driverId: currentDriver.id });
-      toast('Vozač offline.');
-    }
-
-    async function setStatus(rideId, status) {
-      await fetch('/api/rides/' + rideId + '/status', {
-        method: 'POST', headers: {'Content-Type':'application/json'},
-        body: JSON.stringify({ status })
-      });
-      if (status === 'completed') {
-        const r = rides.find(x => x.id === rideId);
-        if (r) earnings += r.price || 0;
-        renderEarnings();
-      }
-    }
-
-    // Simulacija kretanja - pomera marker vozača po Beogradu
+    // ---- Simulacija kretanja (fallback kad nema pravog GPS-a) ----
     function simulateMovement() {
       if (!currentDriver || currentDriver.status === 'offline') return;
       if (currentDriver.lat == null) return;
-      currentDriver.lat += (Math.random() - 0.5) * 0.004;
-      currentDriver.lng += (Math.random() - 0.5) * 0.004;
-      socket.emit('driver:location', {
-        driverId: currentDriver.id,
-        lat: currentDriver.lat,
-        lng: currentDriver.lng
-      });
-      if (myMarker) {
-        myMarker.setLatLng([currentDriver.lat, currentDriver.lng]);
-      }
+      currentDriver.lat += (Math.random() - 0.5) * 0.002;
+      currentDriver.lng += (Math.random() - 0.5) * 0.002;
+      socket.emit('driver:location', { driverId: currentDriver.id, lat: currentDriver.lat, lng: currentDriver.lng });
+      if (myMarker) myMarker.setLatLng([currentDriver.lat, currentDriver.lng]);
     }
+    setInterval(simulateMovement, 3000);
 
-    setInterval(simulateMovement, 2000);
-
-    socket.on('init', (data) => {
-      drivers = data.drivers; rides = data.rides;
-      renderDriverSelect();
-    });
+    // ---- Socket ----
+    socket.on('init', (data) => { drivers = data.drivers; rides = data.rides; renderDriversSelect(); });
     socket.on('drivers:updated', (data) => {
       drivers = data;
-      renderDriverSelect();
-      const prev = document.getElementById('driverSelect').value;
-      if (prev) {
-        currentDriver = drivers.find(d => d.id === prev) || null;
-        renderDriverInfo();
-      }
-      renderAssignedRides();
+      renderDriversSelect();
+      refreshSelf();
     });
-    socket.on('rides:updated', (data) => { rides = data; renderAssignedRides(); });
-    socket.on('ride:assigned', ({ rideId, driverId }) => {
-      if (currentDriver && currentDriver.id === driverId) {
-        toast('🔔 Nova vožnja dodeljena!');
-      }
+    socket.on('rides:updated', (data) => { rides = data; renderCurrentRide(); });
+    socket.on('ride:offer', (ride) => { showOffer(ride); });
+    socket.on('ride:offer_expired', () => { document.getElementById('offerArea').innerHTML = ''; });
+    socket.on('ride:status', ({ rideId, status }) => {
+      if (status === 'accepted') { renderCurrentRide(); drawRouteToPickup(); }
+      else renderCurrentRide();
     });
 
     window.addEventListener('resize', () => map.invalidateSize());
