@@ -84,6 +84,13 @@ function estimateMinutes(distanceKm) {
   return Math.max(3, Math.round((distanceKm / 25) * 60)); // ~25 km/h prosečno u gradu
 }
 
+// ETA od vozača do tačke preuzimanja
+function computeEta(driverLat, driverLng, toLat, toLng) {
+  const km = haversineKm({ lat: driverLat, lng: driverLng }, { lat: toLat, lng: toLng });
+  const minutes = Math.max(1, Math.round((km / 25) * 60));
+  return { distanceKm: Math.round(km * 10) / 10, etaMinutes: minutes };
+}
+
 // ---- REST API ----
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
@@ -223,6 +230,13 @@ app.post('/api/rides/:id/accept', (req, res) => {
   io.emit('rides:updated', rides);
   io.emit('drivers:updated', drivers);
   io.emit('ride:status', { rideId: ride.id, status: 'accepted', driverId });
+
+  // Pošalji korisniku ETA vozača
+  if (driver.lat != null && driver.lng != null && ride.from) {
+    const eta = computeEta(driver.lat, driver.lng, ride.from.lat, ride.from.lng);
+    io.emit('ride:eta', { rideId: ride.id, etaMinutes: eta.etaMinutes, distanceKm: eta.distanceKm });
+  }
+
   // Obavesti ostale vozače da je ponuda istekla
   for (const d of drivers) {
     if (d.id !== driverId && driverSockets[d.id]) {
@@ -337,6 +351,13 @@ io.on('connection', (socket) => {
       if (driver.status === 'offline') driver.status = 'available';
       saveDrivers(drivers);
       io.emit('drivers:updated', drivers);
+
+      // Ako vozi ka korisniku, osveži ETA
+      const ride = rides.find(r => r.driverId === driver.id && r.status === 'accepted');
+      if (ride && ride.from) {
+        const eta = computeEta(driver.lat, driver.lng, ride.from.lat, ride.from.lng);
+        io.emit('ride:eta', { rideId: ride.id, etaMinutes: eta.etaMinutes, distanceKm: eta.distanceKm });
+      }
     }
   });
 

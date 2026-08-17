@@ -127,6 +127,7 @@
     let from = null, to = null, estimateData = null, currentRide = null;
     let drivers = [], rides = [];
     let fromDebounce, toDebounce;
+    let currentEta = null; // { etaMinutes, distanceKm }
 
     map = L.map('map').setView([44.8125, 20.4612], 13);
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
@@ -284,14 +285,21 @@
       document.getElementById('rideStatus').className = 'badge ' + s;
 
       const driver = drivers.find(d => d.id === currentRide.driverId);
-      document.getElementById('trackingInfo').innerHTML = driver ? `
+      const etaHtml = currentEta ? `
+        <div class="card" style="background:var(--bg);margin-top:10px;border-color:var(--accent)">
+          <h3 style="color:var(--accent)">🚕 ETA do dolaska</h3>
+          <p>⏱ <b>~${currentEta.etaMinutes} min</b></p>
+          <p>📏 ${currentEta.distanceKm} km od vas</p>
+        </div>
+      ` : '';
+      document.getElementById('trackingInfo').innerHTML = (driver ? `
         <div class="card" style="background:var(--bg);margin-top:10px">
           <h3>Vaš vozač</h3>
           <p>👤 <b>${driver.name}</b></p>
           <p>🚗 ${driver.vehicle} · ${driver.plate || ''}</p>
           <p>📞 ${driver.phone || 'Nema'}</p>
         </div>
-      ` : '<p class="muted mt">Čekamo vozača da prihvati vožnju...</p>';
+      ` : '<p class="muted mt">Čekamo vozača da prihvati vožnju...</p>') + etaHtml;
 
       if (driver && driver.lat != null && driver.lng != null) {
         if (driverMarker) map.removeLayer(driverMarker);
@@ -301,6 +309,12 @@
 
     socket.on('init', (data) => { drivers = data.drivers; rides = data.rides; });
     socket.on('drivers:updated', (data) => { drivers = data; if (currentRide) renderTracking(); });
+    socket.on('ride:eta', (data) => {
+      if (currentRide && data.rideId === currentRide.id) {
+        currentEta = { etaMinutes: data.etaMinutes, distanceKm: data.distanceKm };
+        renderTracking();
+      }
+    });
     socket.on('rides:updated', (data) => {
       rides = data;
       if (currentRide) {

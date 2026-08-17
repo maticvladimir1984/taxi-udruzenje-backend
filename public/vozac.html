@@ -7,45 +7,72 @@
   <link rel="stylesheet" href="style.css">
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
   <style>
-    body { height: 100vh; overflow: hidden; }
-    #map { height: 100%; }
-    .screen { display: none; position: fixed; inset: 60px 0 0 0; }
-    .screen.active { display: block; }
-    #loginScreen { display: flex; align-items: center; justify-content: center; background: var(--bg); }
-    .login-card { width: 360px; padding: 28px; background: var(--panel); border: 1px solid var(--border); border-radius: 16px; text-align: center; }
+    * { box-sizing: border-box; }
+    body { height: 100vh; overflow: hidden; margin: 0; }
+    #map { height: 100%; width: 100%; }
+    #loginScreen, #mainScreen {
+      display: none;
+      position: fixed;
+      inset: 60px 0 0 0;
+    }
+    #loginScreen.active {
+      display: flex; align-items: center; justify-content: center;
+      background: var(--bg); padding: 16px;
+    }
+    .login-card {
+      width: min(360px, 92vw); padding: 24px;
+      background: var(--panel); border: 1px solid var(--border);
+      border-radius: 16px; text-align: center;
+    }
     .login-card h2 { color: var(--accent); margin: 0 0 20px; }
 
-    #mainScreen { display: none; }
-    #mainScreen.active { display: grid; grid-template-columns: 1fr 360px; }
-    #mainScreen .map-wrap { position: relative; }
-    #mainScreen .side { padding: 16px; overflow-y: auto; border-left: 1px solid var(--border); }
-    @media (max-width: 800px) {
-      #mainScreen.active { grid-template-columns: 1fr; grid-template-rows: 50% 50%; }
+    #mainScreen { height: 100%; }
+    #mainScreen.active {
+      display: grid;
+      grid-template-columns: 1fr 360px;
+      grid-template-rows: 100%;
+    }
+    #mainScreen .map-wrap { position: relative; height: 100%; min-height: 0; overflow: hidden; }
+    #mainScreen .side {
+      padding: 16px; overflow-y: auto; border-left: 1px solid var(--border);
+      display: flex; flex-direction: column; gap: 12px;
+    }
+    @media (max-width: 900px) {
+      #mainScreen.active {
+        grid-template-columns: 1fr;
+        grid-template-rows: minmax(40vh, 45%) 1fr;
+      }
       #mainScreen .side { border-left: none; border-top: 1px solid var(--border); }
     }
 
-    .status-btn { width: 100%; padding: 18px; border: none; border-radius: 12px; font-size: 18px; font-weight: 700; cursor: pointer; color: white; }
+    .status-btn { width: 100%; padding: 14px; border: none; border-radius: 12px; font-size: 16px; font-weight: 700; cursor: pointer; color: white; }
     .status-btn.online { background: var(--green); }
     .status-btn.offline { background: var(--red); }
-    .status-ribbon { display: flex; align-items: center; gap: 10px; padding: 12px; background: var(--panel2); border-radius: 10px; margin-bottom: 12px; font-size: 15px; }
+    .status-ribbon { display: flex; align-items: center; gap: 10px; padding: 12px; background: var(--panel2); border-radius: 10px; font-size: 15px; flex-shrink: 0; }
     .dot { width: 14px; height: 14px; border-radius: 50%; }
     .dot.available { background: var(--green); }
     .dot.offline { background: var(--muted); }
     .dot.enroute { background: var(--accent); }
     .dot.busy { background: var(--red); }
 
-    .offer-card { background: var(--panel); border: 2px solid var(--accent); border-radius: 14px; padding: 18px; margin-bottom: 12px; animation: pulse 1.2s infinite; }
-    @keyframes pulse { 0%,100% { box-shadow: 0 0 0 0 rgba(250,204,21,0.4); } 50% { box-shadow: 0 0 0 12px rgba(250,204,21,0); } }
+    .offer-card { background: var(--panel); border: 2px solid var(--accent); border-radius: 14px; padding: 16px; animation: pulse 1.2s infinite; }
+    @keyframes pulse { 0%,100% { box-shadow: 0 0 0 0 rgba(250,204,21,0.4); } 50% { box-shadow: 0 0 0 10px rgba(250,204,21,0); } }
     .offer-card h3 { color: var(--accent); margin: 0 0 8px; font-size: 18px; }
     .offer-timer { font-size: 13px; color: var(--muted); }
     .offer-actions { display: flex; gap: 10px; margin-top: 14px; }
-    .offer-actions button { flex: 1; padding: 14px; font-size: 16px; font-weight: 700; border: none; border-radius: 10px; cursor: pointer; }
+    .offer-actions button { flex: 1; padding: 13px; font-size: 15px; font-weight: 700; border: none; border-radius: 10px; cursor: pointer; }
     .btn-accept { background: var(--green); color: white; }
     .btn-reject { background: var(--red); color: white; }
 
-    .ride-card { background: var(--panel2); border: 1px solid var(--border); border-radius: 10px; padding: 12px; margin-bottom: 10px; }
+    .ride-card { background: var(--panel2); border: 1px solid var(--border); border-radius: 10px; padding: 12px; overflow: hidden; }
+    .ride-card .nav-btn {
+      display: block; width: 100%; margin-top: 10px; padding: 13px;
+      background: #3b82f6; color: white; border: none; border-radius: 10px;
+      font-size: 15px; font-weight: 700; cursor: pointer; text-align: center;
+      text-decoration: none;
+    }
     .big-stat { text-align: center; padding: 16px; background: var(--panel2); border-radius: 10px; }
-    .big-stat .value { font-size: 28px; font-weight: 700; color: var(--green); }
+    .big-stat .value { font-size: 26px; font-weight: 700; color: var(--green); }
     .big-stat .label { font-size: 12px; color: var(--muted); }
     .suggestions { position: absolute; top: 100%; left: 0; right: 0; z-index: 2000; background: var(--panel2); border: 1px solid var(--border); border-radius: 0 0 10px 10px; max-height: 200px; overflow-y: auto; }
     .suggestion { padding: 10px 12px; cursor: pointer; font-size: 13px; border-bottom: 1px solid var(--border); }
@@ -85,9 +112,9 @@
       </div>
       <button class="status-btn offline" id="statusBtn" onclick="toggleStatus()">🔴 OFFLINE — dodirni za online</button>
 
-      <button class="secondary small mt" style="width:100%" onclick="centerOnMe()">📍 Moj položaj</button>
+      <button class="secondary small" style="width:100%" onclick="centerOnMe()">📍 Moj položaj</button>
 
-      <div class="field mt">
+      <div class="field">
         <label>Traži adresu (opciono)</label>
         <div class="autocomplete-wrap">
           <input type="text" id="addressInput" placeholder="Upišite adresu..." autocomplete="off">
@@ -95,9 +122,9 @@
         </div>
       </div>
 
-      <div id="offerArea" class="mt"></div>
-      <div id="currentRideArea" class="mt"></div>
-      <div class="big-stat mt">
+      <div id="offerArea"></div>
+      <div id="currentRideArea"></div>
+      <div class="big-stat">
         <div class="value" id="earnings">0 RSD</div>
         <div class="label">Zarađeno danas</div>
       </div>
@@ -150,7 +177,7 @@
       document.getElementById('mainScreen').classList.add('active');
       refreshSelf();
       centerOnMe();
-      map.invalidateSize();
+      setTimeout(() => map.invalidateSize(), 100);
     }
 
     function centerOnMe() {
@@ -160,7 +187,6 @@
         map.setView([pos.lat, pos.lng], 16);
         if (myMarker) myMarker.setLatLng([pos.lat, pos.lng]);
         else myMarker = L.marker([pos.lat, pos.lng]).addTo(map);
-        // odmah pošalji serveru
         if (currentDriver) {
           socket.emit('driver:location', { driverId: currentDriver.id, lat: pos.lat, lng: pos.lng });
         }
@@ -282,6 +308,12 @@
       document.getElementById('offerArea').innerHTML = '';
     }
 
+    function startNavigation(lat, lng) {
+      // Google Maps navigacija - otvara se u Google Maps aplikaciji/browseru
+      const url = `https://www.google.com/maps/dir/?api=1&destination=${lat},${lng}&travelmode=driving`;
+      window.location.href = url;
+    }
+
     function renderCurrentRide() {
       const area = document.getElementById('currentRideArea');
       if (!currentDriver) return;
@@ -295,6 +327,7 @@
           <div class="small muted mt">👥 ${r.passengers || 1} putnika</div>
           <div class="small">📍 ${r.from.lat.toFixed(4)}, ${r.from.lng.toFixed(4)}</div>
           <div class="small">🎯 ${r.to.lat.toFixed(4)}, ${r.to.lng.toFixed(4)}</div>
+          ${r.status === 'accepted' ? `<a class="nav-btn" href="#" onclick="startNavigation(${r.from.lat},${r.from.lng});return false;">🧭 Navigacija do putnika</a>` : ''}
           <div class="flex mt">
             ${r.status === 'accepted' ? `<button class="success small" onclick="setStatus('${r.id}','arrived')">📦 Pokupio putnika</button>` : ''}
             ${r.status === 'arrived' ? `<button class="success small" onclick="setStatus('${r.id}','started')">▶ Počni vožnju</button>` : ''}
