@@ -11,13 +11,10 @@
     #map { height: 100%; }
     .screen { display: none; position: fixed; inset: 60px 0 0 0; }
     .screen.active { display: block; }
-
-    /* Login */
     #loginScreen { display: flex; align-items: center; justify-content: center; background: var(--bg); }
     .login-card { width: 360px; padding: 28px; background: var(--panel); border: 1px solid var(--border); border-radius: 16px; text-align: center; }
     .login-card h2 { color: var(--accent); margin: 0 0 20px; }
 
-    /* Glavni ekran */
     #mainScreen { display: none; }
     #mainScreen.active { display: grid; grid-template-columns: 1fr 360px; }
     #mainScreen .map-wrap { position: relative; }
@@ -27,33 +24,18 @@
       #mainScreen .side { border-left: none; border-top: 1px solid var(--border); }
     }
 
-    .status-btn {
-      width: 100%; padding: 18px; border: none; border-radius: 12px;
-      font-size: 18px; font-weight: 700; cursor: pointer; color: white;
-    }
+    .status-btn { width: 100%; padding: 18px; border: none; border-radius: 12px; font-size: 18px; font-weight: 700; cursor: pointer; color: white; }
     .status-btn.online { background: var(--green); }
     .status-btn.offline { background: var(--red); }
-
-    .status-ribbon {
-      display: flex; align-items: center; gap: 10px; padding: 12px;
-      background: var(--panel2); border-radius: 10px; margin-bottom: 12px;
-      font-size: 15px;
-    }
+    .status-ribbon { display: flex; align-items: center; gap: 10px; padding: 12px; background: var(--panel2); border-radius: 10px; margin-bottom: 12px; font-size: 15px; }
     .dot { width: 14px; height: 14px; border-radius: 50%; }
     .dot.available { background: var(--green); }
     .dot.offline { background: var(--muted); }
     .dot.enroute { background: var(--accent); }
     .dot.busy { background: var(--red); }
 
-    /* Ponuda */
-    .offer-card {
-      background: var(--panel); border: 2px solid var(--accent); border-radius: 14px;
-      padding: 18px; margin-bottom: 12px; animation: pulse 1.2s infinite;
-    }
-    @keyframes pulse {
-      0%,100% { box-shadow: 0 0 0 0 rgba(250,204,21,0.4); }
-      50% { box-shadow: 0 0 0 12px rgba(250,204,21,0); }
-    }
+    .offer-card { background: var(--panel); border: 2px solid var(--accent); border-radius: 14px; padding: 18px; margin-bottom: 12px; animation: pulse 1.2s infinite; }
+    @keyframes pulse { 0%,100% { box-shadow: 0 0 0 0 rgba(250,204,21,0.4); } 50% { box-shadow: 0 0 0 12px rgba(250,204,21,0); } }
     .offer-card h3 { color: var(--accent); margin: 0 0 8px; font-size: 18px; }
     .offer-timer { font-size: 13px; color: var(--muted); }
     .offer-actions { display: flex; gap: 10px; margin-top: 14px; }
@@ -62,10 +44,13 @@
     .btn-reject { background: var(--red); color: white; }
 
     .ride-card { background: var(--panel2); border: 1px solid var(--border); border-radius: 10px; padding: 12px; margin-bottom: 10px; }
-    .eta-line { font-size: 13px; color: var(--muted); margin-top: 6px; }
     .big-stat { text-align: center; padding: 16px; background: var(--panel2); border-radius: 10px; }
     .big-stat .value { font-size: 28px; font-weight: 700; color: var(--green); }
     .big-stat .label { font-size: 12px; color: var(--muted); }
+    .suggestions { position: absolute; top: 100%; left: 0; right: 0; z-index: 2000; background: var(--panel2); border: 1px solid var(--border); border-radius: 0 0 10px 10px; max-height: 200px; overflow-y: auto; }
+    .suggestion { padding: 10px 12px; cursor: pointer; font-size: 13px; border-bottom: 1px solid var(--border); }
+    .suggestion:hover { background: var(--panel); }
+    .autocomplete-wrap { position: relative; }
   </style>
 </head>
 <body>
@@ -74,11 +59,11 @@
     <span class="small muted" style="margin-left:auto" id="headerDriver"></span>
   </header>
 
-  <!-- LOGIN EKRAN -->
+  <!-- LOGIN -->
   <div id="loginScreen" class="screen active">
     <div class="login-card">
       <h2>Prijava vozača</h2>
-      <p class="muted small">Izaberite vaš nalog (vozilo). Nalog vam je prethodno kreirao dispečer.</p>
+      <p class="muted small">Izaberite vaš nalog (vozilo). Nalog vam je kreirao dispečer.</p>
       <div class="field">
         <select id="driverSelect">
           <option value="">— Izaberite vozača/vozilo —</option>
@@ -99,6 +84,17 @@
         <span id="statusText">Offline</span>
       </div>
       <button class="status-btn offline" id="statusBtn" onclick="toggleStatus()">🔴 OFFLINE — dodirni za online</button>
+
+      <button class="secondary small mt" style="width:100%" onclick="centerOnMe()">📍 Moj položaj</button>
+
+      <div class="field mt">
+        <label>Traži adresu (opciono)</label>
+        <div class="autocomplete-wrap">
+          <input type="text" id="addressInput" placeholder="Upišite adresu..." autocomplete="off">
+          <div id="addressSuggestions" class="suggestions"></div>
+        </div>
+      </div>
+
       <div id="offerArea" class="mt"></div>
       <div id="currentRideArea" class="mt"></div>
       <div class="big-stat mt">
@@ -116,7 +112,6 @@
     let drivers = [], rides = [], currentDriver = null, earnings = 0;
     let offerTimer = null;
 
-    // Mapa (centar: Beograd, kao podrazumevano)
     map = L.map('map').setView([44.8125, 20.4612], 13);
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
       attribution: '© OpenStreetMap', maxZoom: 19
@@ -154,7 +149,22 @@
       document.getElementById('loginScreen').classList.remove('active');
       document.getElementById('mainScreen').classList.add('active');
       refreshSelf();
+      centerOnMe();
       map.invalidateSize();
+    }
+
+    function centerOnMe() {
+      if (!navigator.geolocation) return toast('Geolokacija nije dostupna');
+      navigator.geolocation.getCurrentPosition(p => {
+        const pos = { lat: p.coords.latitude, lng: p.coords.longitude };
+        map.setView([pos.lat, pos.lng], 16);
+        if (myMarker) myMarker.setLatLng([pos.lat, pos.lng]);
+        else myMarker = L.marker([pos.lat, pos.lng]).addTo(map);
+        // odmah pošalji serveru
+        if (currentDriver) {
+          socket.emit('driver:location', { driverId: currentDriver.id, lat: pos.lat, lng: pos.lng });
+        }
+      }, () => toast('Nije moguće dobiti lokaciju. Omogućite pristup u podešavanjima.'));
     }
 
     function refreshSelf() {
@@ -170,30 +180,25 @@
       if (d.status === 'available') {
         btn.className = 'status-btn online';
         btn.textContent = '🟢 ONLINE — dodirni za offline';
+        btn.disabled = false;
       } else if (d.status === 'offline') {
         btn.className = 'status-btn offline';
         btn.textContent = '🔴 OFFLINE — dodirni za online';
+        btn.disabled = false;
       } else {
         btn.className = 'status-btn offline';
         btn.textContent = '⏳ ' + (SELF_RS[d.status] || d.status);
         btn.disabled = true;
       }
-      // marker
       if (d.lat != null && d.lng != null) {
-        if (!myMarker) {
-          myMarker = L.marker([d.lat, d.lng]).addTo(map);
-          map.setView([d.lat, d.lng], 14);
-        } else {
-          myMarker.setLatLng([d.lat, d.lng]);
-        }
+        if (!myMarker) { myMarker = L.marker([d.lat, d.lng]).addTo(map); map.setView([d.lat, d.lng], 14); }
+        else myMarker.setLatLng([d.lat, d.lng]);
       }
       renderCurrentRide();
     }
 
     function getSelfPos() {
-      if (currentDriver && currentDriver.lat != null) {
-        return { lat: currentDriver.lat, lng: currentDriver.lng };
-      }
+      if (currentDriver && currentDriver.lat != null) return { lat: currentDriver.lat, lng: currentDriver.lng };
       return { lat: 44.8125, lng: 20.4612 };
     }
 
@@ -204,6 +209,8 @@
       } else if (currentDriver.status === 'offline') {
         navigator.geolocation ? navigator.geolocation.getCurrentPosition(p => {
           socket.emit('driver:online', { driverId: currentDriver.id, lat: p.coords.latitude, lng: p.coords.longitude });
+          if (myMarker) myMarker.setLatLng([p.coords.latitude, p.coords.longitude]);
+          map.setView([p.coords.latitude, p.coords.longitude], 16);
         }, () => {
           const pos = getSelfPos();
           socket.emit('driver:online', { driverId: currentDriver.id, lat: pos.lat, lng: pos.lng });
@@ -228,10 +235,8 @@
       });
     }
 
-    // ---- Ponuda ----
     function showOffer(ride) {
       const area = document.getElementById('offerArea');
-      // Odbroj 25 sekundi
       let remaining = 25;
       area.innerHTML = `
         <div class="offer-card">
@@ -252,10 +257,7 @@
         remaining--;
         const el = document.getElementById('offerCountdown');
         if (el) el.textContent = remaining;
-        if (remaining <= 0) {
-          clearInterval(offerTimer);
-          document.getElementById('offerArea').innerHTML = '';
-        }
+        if (remaining <= 0) { clearInterval(offerTimer); document.getElementById('offerArea').innerHTML = ''; }
       }, 1000);
     }
 
@@ -280,7 +282,6 @@
       document.getElementById('offerArea').innerHTML = '';
     }
 
-    // ---- Aktivna vožnja ----
     function renderCurrentRide() {
       const area = document.getElementById('currentRideArea');
       if (!currentDriver) return;
@@ -303,13 +304,11 @@
       `).join('') || '<p class="muted">Nema aktivne vožnje.</p>';
     }
 
-    // ---- Navigacija (OSRM besplatna ruta) ----
     function drawRouteToPickup() {
       const mine = rides.find(r => r.driverId === currentDriver.id && r.status === 'accepted');
       if (!mine) return;
       const from = getSelfPos();
       const to = mine.from;
-      // marker preuzimanja
       if (pickupMarker) map.removeLayer(pickupMarker);
       pickupMarker = L.marker([to.lat, to.lng]).addTo(map).bindPopup('Preuzimanje putnika').openPopup();
       fetch(`https://router.project-osrm.org/route/v1/driving/${from.lng},${from.lat};${to.lng},${to.lat}?overview=full&geometries=geojson`)
@@ -326,14 +325,43 @@
           }
         })
         .catch(() => {
-          // fallback: prava linija
           if (routeLine) map.removeLayer(routeLine);
           routeLine = L.polyline([[from.lat, from.lng], [to.lat, to.lng]], { color: '#3b82f6', weight: 5, dashArray: '6,6' }).addTo(map);
           map.fitBounds(routeLine.getBounds(), { padding: [40, 40] });
         });
     }
 
-    // ---- Simulacija kretanja (fallback kad nema pravog GPS-a) ----
+    // Autocomplete za pretragu adresa
+    const addressInput = document.getElementById('addressInput');
+    const addressBox = document.getElementById('addressSuggestions');
+    let addrDeb;
+    addressInput.addEventListener('input', function() {
+      clearTimeout(addrDeb);
+      const q = addressInput.value.trim();
+      if (q.length < 3) { addressBox.innerHTML = ''; return; }
+      addrDeb = setTimeout(() => {
+        fetch('https://nominatim.openstreetmap.org/search?format=json&limit=5&accept-language=sr&q=' + encodeURIComponent(q), {
+          headers: { 'Accept': 'application/json' }
+        })
+        .then(r => r.json())
+        .then(data => {
+          addressBox.innerHTML = data.map(item => `
+            <div class="suggestion" onclick="gotoAddress(${item.lat}, ${item.lon})">
+              ${item.display_name}
+            </div>
+          `).join('');
+        })
+        .catch(() => {});
+      }, 350);
+    });
+
+    function gotoAddress(lat, lon) {
+      addressBox.innerHTML = '';
+      map.setView([lat, lon], 16);
+      if (myMarker) myMarker.setLatLng([lat, lon]);
+      else myMarker = L.marker([lat, lon]).addTo(map);
+    }
+
     function simulateMovement() {
       if (!currentDriver || currentDriver.status === 'offline') return;
       if (currentDriver.lat == null) return;
@@ -344,13 +372,8 @@
     }
     setInterval(simulateMovement, 3000);
 
-    // ---- Socket ----
     socket.on('init', (data) => { drivers = data.drivers; rides = data.rides; renderDriversSelect(); });
-    socket.on('drivers:updated', (data) => {
-      drivers = data;
-      renderDriversSelect();
-      refreshSelf();
-    });
+    socket.on('drivers:updated', (data) => { drivers = data; renderDriversSelect(); refreshSelf(); });
     socket.on('rides:updated', (data) => { rides = data; renderCurrentRide(); });
     socket.on('ride:offer', (ride) => { showOffer(ride); });
     socket.on('ride:offer_expired', () => { document.getElementById('offerArea').innerHTML = ''; });

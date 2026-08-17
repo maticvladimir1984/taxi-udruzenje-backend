@@ -20,6 +20,18 @@
     .step.active { display: block; }
     .quick-loc { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
     .quick-loc button { padding: 6px 12px; font-size: 13px; }
+    .autocomplete-wrap { position: relative; }
+    .suggestions {
+      position: absolute; top: 100%; left: 0; right: 0; z-index: 2000;
+      background: var(--panel2); border: 1px solid var(--border); border-radius: 0 0 10px 10px;
+      max-height: 240px; overflow-y: auto;
+    }
+    .suggestion {
+      padding: 10px 12px; cursor: pointer; font-size: 13px; border-bottom: 1px solid var(--border);
+    }
+    .suggestion:hover { background: var(--panel); }
+    .suggestion .t { color: var(--text); }
+    .suggestion .s { color: var(--muted); font-size: 11px; }
   </style>
 </head>
 <body>
@@ -60,16 +72,24 @@
             <div class="quick-loc">
               <button class="secondary small" onclick="useMyLocation('from')">📍 Moja lokacija</button>
               <button class="secondary small" onclick="pickMode='from'; toast('Kliknite kartu za polazak')">🗺 Na karti</button>
+              <button class="secondary small" onclick="enterCoords('from')">🧭 Koordinate</button>
             </div>
-            <input type="text" id="fromLabel" placeholder="Polazak" readonly>
+            <div class="autocomplete-wrap">
+              <input type="text" id="fromInput" placeholder="Upišite adresu..." autocomplete="off">
+              <div id="fromSuggestions" class="suggestions"></div>
+            </div>
           </div>
 
           <div class="field">
             <label>Odredište</label>
             <div class="quick-loc">
               <button class="secondary small" onclick="pickMode='to'; toast('Kliknite kartu za odredište')">🗺 Na karti</button>
+              <button class="secondary small" onclick="enterCoords('to')">🧭 Koordinate</button>
             </div>
-            <input type="text" id="toLabel" placeholder="Odredište" readonly>
+            <div class="autocomplete-wrap">
+              <input type="text" id="toInput" placeholder="Upišite adresu..." autocomplete="off">
+              <div id="toSuggestions" class="suggestions"></div>
+            </div>
           </div>
 
           <button style="width:100%" onclick="estimate()">💰 Izračunaj cenu</button>
@@ -106,6 +126,7 @@
     let pickMode = null; // 'from' | 'to'
     let from = null, to = null, estimateData = null, currentRide = null;
     let drivers = [], rides = [];
+    let fromDebounce, toDebounce;
 
     map = L.map('map').setView([44.8125, 20.4612], 13);
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
@@ -116,16 +137,9 @@
       if (!pickMode) return;
       const pos = { lat: e.latlng.lat, lng: e.latlng.lng };
       if (pickMode === 'from') {
-        from = pos;
-        document.getElementById('fromLabel').value = pos.lat.toFixed(5) + ', ' + pos.lng.toFixed(5);
-        if (fromMarker) map.removeLayer(fromMarker);
-        fromMarker = L.marker([pos.lat, pos.lng]).addTo(map).bindPopup('Polazak').openPopup();
+        setFrom(pos);
       } else if (pickMode === 'to') {
-        to = pos;
-        document.getElementById('toLabel').value = pos.lat.toFixed(5) + ', ' + pos.lng.toFixed(5);
-        if (toMarker) map.removeLayer(toMarker);
-        toMarker = L.marker([pos.lat, pos.lng]).addTo(map).bindPopup('Odredište').openPopup();
-        if (from) map.fitBounds([[from.lat, from.lng], [to.lat, to.lng]], { padding: [30, 30] });
+        setTo(pos);
       }
       pickMode = null;
     });
@@ -138,23 +152,71 @@
       setTimeout(() => t.remove(), 3000);
     }
 
+    function setFrom(pos) {
+      from = pos;
+      document.getElementById('fromInput').value = pos.lat.toFixed(5) + ', ' + pos.lng.toFixed(5);
+      if (fromMarker) map.removeLayer(fromMarker);
+      fromMarker = L.marker([pos.lat, pos.lng]).addTo(map).bindPopup('Polazak').openPopup();
+      map.setView([pos.lat, pos.lng], 15);
+    }
+
+    function setTo(pos) {
+      to = pos;
+      document.getElementById('toInput').value = pos.lat.toFixed(5) + ', ' + pos.lng.toFixed(5);
+      if (toMarker) map.removeLayer(toMarker);
+      toMarker = L.marker([pos.lat, pos.lng]).addTo(map).bindPopup('Odredište').openPopup();
+      if (from) map.fitBounds([[from.lat, from.lng], [to.lat, to.lng]], { padding: [30, 30] });
+      else map.setView([pos.lat, pos.lng], 15);
+    }
+
     function useMyLocation(which) {
       if (!navigator.geolocation) return toast('Geolokacija nije dostupna');
       navigator.geolocation.getCurrentPosition(p => {
         const pos = { lat: p.coords.latitude, lng: p.coords.longitude };
-        if (which === 'from') {
-          from = pos;
-          document.getElementById('fromLabel').value = pos.lat.toFixed(5) + ', ' + pos.lng.toFixed(5);
-          if (fromMarker) map.removeLayer(fromMarker);
-          fromMarker = L.marker([pos.lat, pos.lng]).addTo(map).bindPopup('Polazak').openPopup();
-        } else {
-          to = pos;
-          document.getElementById('toLabel').value = pos.lat.toFixed(5) + ', ' + pos.lng.toFixed(5);
-          if (toMarker) map.removeLayer(toMarker);
-          toMarker = L.marker([pos.lat, pos.lng]).addTo(map).bindPopup('Odredište').openPopup();
-        }
-        map.setView([pos.lat, pos.lng], 15);
-      }, () => toast('Nije moguće dobiti lokaciju. Koristite kartu.'));
+        if (which === 'from') setFrom(pos); else setTo(pos);
+      }, () => toast('Nije moguće dobiti lokaciju. Omogućite pristup lokaciji.'));
+    }
+
+    function enterCoords(which) {
+      const val = prompt('Unesite koordinate (lat, lng)\nPrimer: 44.8125, 20.4612', '');
+      if (!val) return;
+      const parts = val.split(',').map(s => parseFloat(s.trim()));
+      if (parts.length !== 2 || isNaN(parts[0]) || isNaN(parts[1])) return toast('Neispravne koordinate');
+      const pos = { lat: parts[0], lng: parts[1] };
+      if (which === 'from') setFrom(pos); else setTo(pos);
+    }
+
+    // Autocomplete preko Nominatim (OpenStreetMap) - besplatan
+    function autocomplete(inputId, suggId, cb) {
+      const input = document.getElementById(inputId);
+      const box = document.getElementById(suggId);
+      let deb;
+      input.addEventListener('input', function() {
+        clearTimeout(deb);
+        const q = input.value.trim();
+        if (q.length < 3) { box.innerHTML = ''; return; }
+        deb = setTimeout(() => {
+          fetch('https://nominatim.openstreetmap.org/search?format=json&limit=6&accept-language=sr&q=' + encodeURIComponent(q), {
+            headers: { 'Accept': 'application/json' }
+          })
+          .then(r => r.json())
+          .then(data => {
+            box.innerHTML = data.map(item => `
+              <div class="suggestion" onclick="selectSuggestion('${suggId}', ${item.lat}, ${item.lon}, '${inputId}', '${inputId === 'fromInput' ? 'from' : 'to'}')">
+                <div class="t">${item.display_name}</div>
+              </div>
+            `).join('');
+          })
+          .catch(() => {});
+        }, 350);
+      });
+    }
+
+    function selectSuggestion(suggId, lat, lon, inputId, which) {
+      document.getElementById(suggId).innerHTML = '';
+      const pos = { lat: parseFloat(lat), lng: parseFloat(lon) };
+      if (which === 'from') setFrom(pos); else setTo(pos);
+      document.getElementById(inputId).value = pos.lat.toFixed(5) + ', ' + pos.lng.toFixed(5);
     }
 
     function step(n) {
@@ -248,6 +310,10 @@
     });
 
     window.addEventListener('resize', () => map.invalidateSize());
+
+    // Inicijalizuj autocomplete za oba polja
+    autocomplete('fromInput', 'fromSuggestions');
+    autocomplete('toInput', 'toSuggestions');
   </script>
 </body>
 </html>
