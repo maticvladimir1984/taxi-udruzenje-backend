@@ -8,12 +8,15 @@
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
   <style>
     * { box-sizing: border-box; }
-    body { height: 100vh; overflow: hidden; margin: 0; }
+    body { height: 100vh; height: 100dvh; overflow: hidden; margin: 0; }
     #map { height: 100%; width: 100%; }
     #loginScreen, #mainScreen {
       display: none;
       position: fixed;
-      inset: 60px 0 0 0;
+      top: 60px;
+      bottom: 0;
+      left: 0;
+      right: 0;
     }
     #loginScreen.active {
       display: flex; align-items: center; justify-content: center;
@@ -34,8 +37,10 @@
     }
     #mainScreen .map-wrap { position: relative; height: 100%; min-height: 0; overflow: hidden; }
     #mainScreen .side {
-      padding: 16px; overflow-y: auto; border-left: 1px solid var(--border);
+      padding: 16px; padding-bottom: calc(16px + env(safe-area-inset-bottom));
+      overflow-y: auto; border-left: 1px solid var(--border);
       display: flex; flex-direction: column; gap: 12px;
+      min-height: 0;
     }
     @media (max-width: 900px) {
       #mainScreen.active {
@@ -162,7 +167,7 @@
       const sel = document.getElementById('driverSelect');
       const prev = sel.value;
       sel.innerHTML = '<option value="">— Izaberite vozača/vozilo —</option>' +
-        drivers.map(d => `<option value="${d.id}">${d.name} — ${d.vehicle} (${d.plate || 'n/a'})</option>`).join('');
+        drivers.map(d => `<option value="${d.id}">${d.name} — ${d.vehicle} (${d.plate || 'n/a'})${d.tag ? ' [' + d.tag + ']' : ''}</option>`).join('');
       if (prev) sel.value = prev;
     }
 
@@ -172,7 +177,7 @@
       currentDriver = drivers.find(d => d.id === id);
       if (!currentDriver) return toast('Nalog nije pronađen');
       socket.emit('driver:register', { driverId: currentDriver.id });
-      document.getElementById('headerDriver').textContent = currentDriver.name + ' — ' + currentDriver.vehicle;
+      document.getElementById('headerDriver').textContent = currentDriver.name + ' — ' + currentDriver.vehicle + (currentDriver.tag ? ' [' + currentDriver.tag + ']' : '');
       document.getElementById('loginScreen').classList.remove('active');
       document.getElementById('mainScreen').classList.add('active');
       refreshSelf();

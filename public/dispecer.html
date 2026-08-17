@@ -7,14 +7,15 @@
   <link rel="stylesheet" href="style.css">
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
   <style>
-    body { height: 100vh; overflow: hidden; }
+    body { height: 100vh; height: 100dvh; overflow: hidden; }
     .layout {
       display: grid;
       grid-template-columns: 320px 1fr 320px;
       height: calc(100vh - 60px);
+      height: calc(100dvh - 60px);
       gap: 0;
     }
-    .col { padding: 16px; overflow-y: auto; border-right: 1px solid var(--border); }
+    .col { padding: 16px; padding-bottom: calc(16px + env(safe-area-inset-bottom)); overflow-y: auto; border-right: 1px solid var(--border); min-height: 0; }
     .col:last-child { border-right: none; border-left: 1px solid var(--border); }
     #map { height: 100%; }
     .driver-item, .ride-item {
@@ -23,6 +24,16 @@
       border-radius: 8px;
       margin-bottom: 8px;
       background: var(--panel2);
+    }
+    .driver-item input { margin-bottom: 6px; }
+    .tag-badge {
+      display: inline-block;
+      background: #3b82f6;
+      color: #fff;
+      font-size: 12px;
+      font-weight: 600;
+      padding: 2px 8px;
+      border-radius: 5px;
     }
     @media (max-width: 900px) {
       .layout { grid-template-columns: 1fr; grid-template-rows: auto 50% auto; }
@@ -50,6 +61,9 @@
       </div>
       <div class="field">
         <input type="text" id="driverPhone" placeholder="Telefon">
+      </div>
+      <div class="field">
+        <input type="text" id="driverTag" placeholder="TAG (npr. Vozilo 123)">
       </div>
       <button class="success" style="width:100%" onclick="addDriver()">+ Dodaj vozača</button>
       <hr style="border-color:var(--border);margin:16px 0">
@@ -107,6 +121,12 @@
       setTimeout(() => t.remove(), 3000);
     }
 
+    function escapeHtml(s) {
+      const d = document.createElement('div');
+      d.textContent = String(s == null ? '' : s);
+      return d.innerHTML;
+    }
+
     function driverColor(status) {
       if (status === 'available') return '#22c55e';
       if (status === 'enroute') return '#f59e0b';
@@ -114,17 +134,43 @@
       return '#64748b'; // offline
     }
 
+    function haversineKm(a, b) {
+      const R = 6371;
+      const dLat = (b.lat - a.lat) * Math.PI / 180;
+      const dLon = (b.lng - a.lng) * Math.PI / 180;
+      const la1 = a.lat * Math.PI / 180;
+      const la2 = b.lat * Math.PI / 180;
+      const h = Math.sin(dLat / 2) ** 2 + Math.cos(la1) * Math.cos(la2) * Math.sin(dLon / 2) ** 2;
+      return 2 * R * Math.asin(Math.sqrt(h));
+    }
+
+    function sortedAvailableDrivers(from) {
+      return drivers
+        .filter(d => d.status === 'available' || d.status === 'offline')
+        .slice()
+        .sort((a, b) => {
+          const aHas = a.lat != null && a.lng != null;
+          const bHas = b.lat != null && b.lng != null;
+          if (!aHas && !bHas) return 0;
+          if (!aHas) return 1;
+          if (!bHas) return -1;
+          return haversineKm(from, { lat: a.lat, lng: a.lng }) - haversineKm(from, { lat: b.lat, lng: b.lng });
+        });
+    }
+
     function renderDrivers() {
       const el = document.getElementById('driversList');
       el.innerHTML = drivers.map(d => `
-        <div class="driver-item">
+        <div class="driver-item" id="driver-${d.id}">
           <div class="flex-between">
-            <strong>${d.name}</strong>
+            <strong>${escapeHtml(d.name)}</strong>
             <span class="badge ${d.status}">${DRIVER_STATUS_RS[d.status] || d.status}</span>
           </div>
-          <div class="small muted">${d.vehicle} · ${d.plate || 'n/a'}</div>
-          <div class="small muted">📞 ${d.phone || '—'}</div>
+          <div class="small muted">${escapeHtml(d.vehicle)} · ${escapeHtml(d.plate || 'n/a')}</div>
+          <div class="small muted">📞 ${escapeHtml(d.phone || '—')}</div>
+          ${d.tag ? `<div class="mt"><span class="tag-badge"># ${escapeHtml(d.tag)}</span></div>` : ''}
           <div class="mt flex">
+            <button class="secondary small" onclick="editDriver('${d.id}')">✏ Izmeni</button>
             <button class="danger small" onclick="deleteDriver('${d.id}')">Obriši</button>
           </div>
         </div>
@@ -137,17 +183,21 @@
       }
       drivers.forEach(d => {
         if (d.lat != null && d.lng != null) {
+          const label = escapeHtml(d.name + (d.tag ? ' · ' + d.tag : ''));
           const icon = L.divIcon({
             className: '',
-            html: `<div style="background:${driverColor(d.status)};width:16px;height:16px;border-radius:50%;border:2px solid white;"></div>`,
-            iconSize: [16,16], iconAnchor: [8,8]
+            html: `<div style="display:flex;align-items:center;gap:4px;white-space:nowrap;">
+              <span style="background:${driverColor(d.status)};width:14px;height:14px;border-radius:50%;border:2px solid white;flex-shrink:0;"></span>
+              <span style="background:rgba(15,23,42,0.85);color:#fff;font-size:12px;font-weight:600;padding:2px 7px;border-radius:5px;">${label}</span>
+            </div>`,
+            iconSize: [150, 22], iconAnchor: [7, 11]
           });
           if (driverMarkers[d.id]) {
             driverMarkers[d.id].setLatLng([d.lat, d.lng]);
             driverMarkers[d.id].setIcon(icon);
           } else {
             driverMarkers[d.id] = L.marker([d.lat, d.lng], { icon }).addTo(map)
-              .bindPopup(`<b>${d.name}</b><br>${d.vehicle}<br>${d.plate || ''}<br>${DRIVER_STATUS_RS[d.status]}`);
+              .bindPopup(`<b>${escapeHtml(d.name)}</b><br>${escapeHtml(d.vehicle)}<br>${escapeHtml(d.plate || '')}<br>${d.tag ? '#' + escapeHtml(d.tag) + '<br>' : ''}${DRIVER_STATUS_RS[d.status]}`);
           }
         }
       });
@@ -159,6 +209,30 @@
       el.innerHTML = active.map(r => {
         const driver = drivers.find(d => d.id === r.driverId);
         const waiting = ['pending', 'offering'].includes(r.status);
+        let assignHtml = '';
+        if (waiting) {
+          if (r.from && r.from.lat != null) {
+            const sorted = sortedAvailableDrivers(r.from);
+            const nearestId = sorted.length && sorted[0].lat != null ? sorted[0].id : '';
+            assignHtml = `
+              <select id="driverSelect-${r.id}" style="margin-bottom:6px">
+                <option value="">— Izaberi vozača —</option>
+                ${sorted.map((d, i) => {
+                  const has = d.lat != null && d.lng != null;
+                  const dist = has ? haversineKm(r.from, { lat: d.lat, lng: d.lng }).toFixed(1) : null;
+                  return `<option value="${d.id}" ${i === 0 && has ? 'selected' : ''}>${i === 0 && has ? '⭐ ' : ''}${escapeHtml(d.name)} (${escapeHtml(d.vehicle)})${dist ? ' · ' + dist + ' km' : ''}</option>`;
+                }).join('')}
+              </select>
+              <button class="warning small" style="width:100%;background:#f59e0b;color:#111" onclick="assignRide('${r.id}')">Dodeli vozača (ručno)</button>`;
+          } else {
+            assignHtml = `
+              <select id="driverSelect-${r.id}" style="margin-bottom:6px">
+                <option value="">— Izaberi vozača —</option>
+                ${drivers.filter(d => d.status === 'available' || d.status === 'offline').map(d => `<option value="${d.id}">${escapeHtml(d.name)} (${escapeHtml(d.vehicle)})</option>`).join('')}
+              </select>
+              <button class="warning small" style="width:100%;background:#f59e0b;color:#111" onclick="assignRide('${r.id}')">Dodeli vozača (ručno)</button>`;
+          }
+        }
         return `
           <div class="ride-item">
             <div class="flex-between">
@@ -168,14 +242,8 @@
             <div class="small muted mt">👥 ${r.passengers || 1} putnika · ${r.price || 0} RSD</div>
             <div class="small muted">📍 ${(r.from?.lat ?? 0).toFixed(4)}, ${(r.from?.lng ?? 0).toFixed(4)}</div>
             <div class="small muted">🎯 ${(r.to?.lat ?? 0).toFixed(4)}, ${(r.to?.lng ?? 0).toFixed(4)}</div>
-            ${driver ? `<div class="small">Vozač: <b>${driver.name}</b> (${driver.vehicle})</div>` : ''}
-            <div class="mt">
-              ${waiting ? `<select id="driverSelect-${r.id}" style="margin-bottom:6px">
-                <option value="">— Izaberi vozača —</option>
-                ${drivers.filter(d => d.status === 'available' || d.status === 'offline').map(d => `<option value="${d.id}">${d.name} (${d.vehicle})</option>`).join('')}
-              </select>
-              <button class="warning small" style="width:100%;background:#f59e0b;color:#111" onclick="assignRide('${r.id}')">Dodeli vozača (ručno)</button>` : ''}
-            </div>
+            ${driver ? `<div class="small">Vozač: <b>${escapeHtml(driver.name)}</b> (${escapeHtml(driver.vehicle)})</div>` : ''}
+            <div class="mt">${assignHtml}</div>
           </div>
         `;
       }).join('') || '<p class="muted">Nema aktivnih vožnji.</p>';
@@ -196,7 +264,7 @@
             passengerMarkers[r.id].setLatLng([r.from.lat, r.from.lng]);
           } else {
             passengerMarkers[r.id] = L.marker([r.from.lat, r.from.lng], { icon }).addTo(map)
-              .bindPopup(`<b>Korisnik čeka</b><br>${r.passenger || ''}<br>👥 ${r.passengers || 1} · ${r.price || 0} RSD`);
+              .bindPopup(`<b>Korisnik čeka</b><br>${escapeHtml(r.passenger || '')}<br>👥 ${r.passengers || 1} · ${r.price || 0} RSD`);
           }
         }
       });
@@ -213,16 +281,52 @@
       const vehicle = document.getElementById('driverVehicle').value.trim();
       const plate = document.getElementById('driverPlate').value.trim();
       const phone = document.getElementById('driverPhone').value.trim();
+      const tag = document.getElementById('driverTag').value.trim();
       if (!name) return toast('Unesite ime vozača');
       await fetch('/api/drivers', {
         method: 'POST', headers: {'Content-Type':'application/json'},
-        body: JSON.stringify({ name, vehicle, plate, phone })
+        body: JSON.stringify({ name, vehicle, plate, phone, tag })
       });
       document.getElementById('driverName').value = '';
       document.getElementById('driverVehicle').value = '';
       document.getElementById('driverPlate').value = '';
       document.getElementById('driverPhone').value = '';
+      document.getElementById('driverTag').value = '';
       toast('Vozač dodat');
+    }
+
+    function editDriver(id) {
+      const d = drivers.find(x => x.id === id);
+      if (!d) return;
+      const card = document.getElementById('driver-' + id);
+      if (!card) return;
+      card.innerHTML = `
+        <div class="field"><input type="text" id="eName-${d.id}" value="${escapeHtml(d.name)}" placeholder="Ime"></div>
+        <div class="field"><input type="text" id="eVehicle-${d.id}" value="${escapeHtml(d.vehicle)}" placeholder="Model vozila"></div>
+        <div class="field"><input type="text" id="ePlate-${d.id}" value="${escapeHtml(d.plate)}" placeholder="Registracija"></div>
+        <div class="field"><input type="text" id="ePhone-${d.id}" value="${escapeHtml(d.phone)}" placeholder="Telefon"></div>
+        <div class="field"><input type="text" id="eTag-${d.id}" value="${escapeHtml(d.tag || '')}" placeholder="TAG (npr. Vozilo 123)"></div>
+        <div class="flex">
+          <button class="success small" onclick="saveDriver('${d.id}')">💾 Sačuvaj</button>
+          <button class="secondary small" onclick="renderDrivers()">Otkaži</button>
+        </div>
+      `;
+    }
+
+    async function saveDriver(id) {
+      const body = {
+        name: document.getElementById('eName-' + id).value.trim(),
+        vehicle: document.getElementById('eVehicle-' + id).value.trim(),
+        plate: document.getElementById('ePlate-' + id).value.trim(),
+        phone: document.getElementById('ePhone-' + id).value.trim(),
+        tag: document.getElementById('eTag-' + id).value.trim(),
+      };
+      if (!body.name) return toast('Ime je obavezno');
+      await fetch('/api/drivers/' + id, {
+        method: 'PUT', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify(body)
+      });
+      toast('Vozač ažuriran');
     }
 
     async function deleteDriver(id) {

@@ -7,11 +7,11 @@
   <link rel="stylesheet" href="style.css">
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
   <style>
-    body { height: 100vh; overflow: hidden; }
+    body { height: 100vh; height: 100dvh; overflow: hidden; }
     #map { height: 100%; }
-    .layout { display: grid; grid-template-columns: 1fr 380px; height: calc(100vh - 60px); }
-    .map-col { height: 100%; }
-    .side { padding: 16px; overflow-y: auto; border-left: 1px solid var(--border); }
+    .layout { display: grid; grid-template-columns: 1fr 380px; height: calc(100vh - 60px); height: calc(100dvh - 60px); }
+    .map-col { height: 100%; min-height: 0; }
+    .side { padding: 16px; padding-bottom: calc(16px + env(safe-area-inset-bottom)); overflow-y: auto; border-left: 1px solid var(--border); min-height: 0; }
     @media (max-width: 800px) {
       .layout { grid-template-columns: 1fr; grid-template-rows: 50% 50%; }
       .side { border-left: none; border-top: 1px solid var(--border); }
@@ -113,6 +113,7 @@
           <h2>Vožnja naručena</h2>
           <p class="muted">Status: <span id="rideStatus" class="badge pending">Na čekanju</span></p>
           <div id="trackingInfo"></div>
+          <div id="actionArea"></div>
         </div>
       </div>
     </div>
@@ -305,6 +306,80 @@
         if (driverMarker) map.removeLayer(driverMarker);
         driverMarker = L.marker([driver.lat, driver.lng]).addTo(map).bindPopup('Vozač: ' + driver.name).openPopup();
       }
+      renderActions();
+    }
+
+    let cancelTimer = null;
+
+    function stopCancelTimer() {
+      if (cancelTimer) { clearInterval(cancelTimer); cancelTimer = null; }
+    }
+
+    function renderActions() {
+      const area = document.getElementById('actionArea');
+      if (!area) return;
+      if (!currentRide) { area.innerHTML = ''; stopCancelTimer(); return; }
+      const s = currentRide.status;
+      if (['completed', 'cancelled'].includes(s)) {
+        stopCancelTimer();
+        area.innerHTML = s === 'completed'
+          ? '<p style="width:100%;padding:10px;text-align:center;color:var(--green);font-weight:700">✅ Vožnja je završena. Hvala!</p>'
+          : '<p class="muted" style="width:100%;padding:10px;text-align:center">Vožnja je otkazana.</p>';
+        return;
+      }
+
+      const created = new Date(currentRide.createdAt).getTime();
+      const TWO_MIN = 2 * 60 * 1000;
+      const elapsed = Date.now() - created;
+      let html = '';
+
+      if (elapsed <= TWO_MIN) {
+        const remaining = Math.max(0, Math.ceil((TWO_MIN - elapsed) / 1000));
+        const mm = Math.floor(remaining / 60);
+        const ss = remaining % 60;
+        html += `<div class="card" style="background:var(--bg);margin-top:10px;border-color:var(--accent)">
+          <p class="small muted">Besplatno otkazivanje još: <b id="cancelCountdown">${mm}:${String(ss).padStart(2, '0')}</b></p>
+          <button class="danger" style="width:100%" onclick="cancelRide()">✖ Otkaži vožnju</button>
+        </div>`;
+        stopCancelTimer();
+        cancelTimer = setInterval(() => {
+          const rem = Math.max(0, Math.ceil((TWO_MIN - (Date.now() - created)) / 1000));
+          const el2 = document.getElementById('cancelCountdown');
+          if (el2) {
+            el2.textContent = Math.floor(rem / 60) + ':' + String(rem % 60).padStart(2, '0');
+          }
+          if (rem <= 0) { stopCancelTimer(); renderActions(); }
+        }, 1000);
+      }
+
+      if (s === 'started') {
+        html += `<button class="success" style="width:100%;margin-top:10px" onclick="completeRide()">✔ Potvrdi završetak vožnje</button>`;
+      }
+
+      area.innerHTML = html;
+    }
+
+    async function cancelRide() {
+      if (!currentRide) return;
+      const res = await fetch('/api/rides/' + currentRide.id + '/cancel', { method: 'POST' });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        toast(err.error || 'Otkazivanje nije moguće');
+        renderActions();
+        return;
+      }
+      toast('Vožnja otkazana');
+    }
+
+    async function completeRide() {
+      if (!currentRide) return;
+      const res = await fetch('/api/rides/' + currentRide.id + '/complete', { method: 'POST' });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        toast(err.error || 'Potvrda nije moguća');
+        return;
+      }
+      toast('Hvala! Vožnja je završena.');
     }
 
     socket.on('init', (data) => { drivers = data.drivers; rides = data.rides; });

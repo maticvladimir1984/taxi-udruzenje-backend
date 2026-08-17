@@ -40,9 +40,41 @@ function saveRides(rides) {
   fs.writeFileSync(RIDES_FILE, JSON.stringify(rides, null, 2));
 }
 
+// Podrazumevani vozači koji se automatski kreiraju ako je lista prazna.
+// Na Render Free planu disk je privremen (ephemeral), pa se JSON fajlovi
+// brišu kad se server uspava. Ovaj seed obezbeđuje da dropdown u vozačkoj
+// aplikaciji nikad ne bude prazan.
+function seedDrivers() {
+  const existing = loadDrivers();
+  if (existing.length > 0) return existing;
+
+  const now = new Date().toISOString();
+  const defaults = [
+    { name: 'Test Vozac',  vehicle: 'BG-123-TT',    plate: '',           phone: '060123456',   tag: '' },
+    { name: 'vladimir',    vehicle: 'PO 134 FV',    plate: '',           phone: '063 88 22 727', tag: '' },
+    { name: 'Petar',       vehicle: 'Škoda Octavia', plate: 'BG-999-XX', phone: '060111222',   tag: '' },
+  ];
+
+  const seeded = defaults.map((d, i) => ({
+    id: 'd' + (i + 1),
+    name: d.name,
+    vehicle: d.vehicle,
+    plate: d.plate,
+    phone: d.phone,
+    tag: d.tag,
+    status: 'offline',
+    lat: null,
+    lng: null,
+    createdAt: now,
+  }));
+
+  saveDrivers(seeded);
+  return seeded;
+}
+
 // ---- In-memory state (za Socket.IO održavanje veza) ----
-const drivers = loadDrivers();
-const rides = loadRides();
+let drivers = seedDrivers();
+let rides = loadRides();
 
 // Mapiranje socket konekcija vozača: driverId -> socket.id
 const driverSockets = {};
@@ -107,7 +139,7 @@ app.post('/api/settings', (req, res) => {
 app.get('/api/drivers', (req, res) => res.json(drivers));
 
 app.post('/api/drivers', (req, res) => {
-  const { name, vehicle, plate, phone } = req.body || {};
+  const { name, vehicle, plate, phone, tag } = req.body || {};
   if (!name) return res.status(400).json({ error: 'Ime je obavezno' });
   const driver = {
     id: nextId('d', drivers),
@@ -115,6 +147,7 @@ app.post('/api/drivers', (req, res) => {
     vehicle: vehicle || '',
     plate: plate || '',
     phone: phone || '',
+    tag: tag || '',
     status: 'offline', // offline | available | enroute | busy
     lat: null,
     lng: null,
@@ -133,6 +166,27 @@ app.delete('/api/drivers/:id', (req, res) => {
   saveDrivers(drivers);
   io.emit('drivers:updated', drivers);
   res.json({ ok: true });
+});
+
+// Izmena podataka vozača
+app.put('/api/drivers/:id', (req, res) => {
+  const i = drivers.findIndex(d => d.id === req.params.id);
+  if (i === -1) return res.status(404).json({ error: 'Vozač ne postoji' });
+  const { name, vehicle, plate, phone, tag } = req.body || {};
+  if (name !== undefined && !String(name).trim()) return res.status(400).json({ error: 'Ime je obavezno' });
+
+  const current = drivers[i];
+  drivers[i] = {
+    ...current,
+    name: name !== undefined ? String(name).trim() : current.name,
+    vehicle: vehicle !== undefined ? String(vehicle) : current.vehicle,
+    plate: plate !== undefined ? String(plate) : current.plate,
+    phone: phone !== undefined ? String(phone) : current.phone,
+    tag: tag !== undefined ? String(tag) : current.tag,
+  };
+  saveDrivers(drivers);
+  io.emit('drivers:updated', drivers);
+  res.json(drivers[i]);
 });
 
 // ---- Vožnje ----
@@ -309,6 +363,61 @@ app.post('/api/rides/:id/status', (req, res) => {
   io.emit('rides:updated', rides);
   io.emit('drivers:updated', drivers);
   io.emit('ride:status', { rideId: ride.id, status });
+  res.json(ride);
+});
+
+// Otkazivanje vožnje od strane korisnika (dozvoljeno u prvih 2 minuta)
+app.post('/api/rides/:id/cancel', (req, res) => {
+  const ride = rides.find(r => r.id === req.params.id);
+  if (!ride) return res.status(404).json({ error: 'Vožnja ne postoji' });
+  if (['completed', 'cancelled'].includes(ride.status)) {
+    return res.status(400).json({ error: 'Vožnja je već završena ili otkazana' });
+  }
+
+  const elapsed = Date.now() - new Date(ride.createdAt).getTime();
+  const TWO_MIN = 2 * 60 * 1000;
+  if (elapsed > TWO_MIN) {
+    return res.status(400).json({ error: 'Vreme za besplatno otkazivanje je isteklo' });
+  }
+
+  ride.status = 'cancelled';
+  ride.cancelledByUser = true;
+  ride.history.push({ status: 'cancelled', at: new Date().toISOString(), by: 'user' });
+
+  const driver = drivers.find(d => d.id === ride.driverId);
+  if (driver) {
+    driver.status = 'available'; // oslobodi vozilo
+  }
+
+  saveRides(rides);
+  saveDrivers(drivers);
+  io.emit('rides:updated', rides);
+  io.emit('drivers:updated', drivers);
+  io.emit('ride:status', { rideId: ride.id, status: 'cancelled' });
+  res.json(ride);
+});
+
+// Potvrda završetka vožnje od strane korisnika
+app.post('/api/rides/:id/complete', (req, res) => {
+  const ride = rides.find(r => r.id === req.params.id);
+  if (!ride) return res.status(404).json({ error: 'Vožnja ne postoji' });
+  if (ride.status !== 'started') {
+    return res.status(400).json({ error: 'Vožnja još nije u toku' });
+  }
+
+  ride.status = 'completed';
+  ride.history.push({ status: 'completed', at: new Date().toISOString(), by: 'user' });
+
+  const driver = drivers.find(d => d.id === ride.driverId);
+  if (driver) {
+    driver.status = 'available'; // oslobodi vozilo
+  }
+
+  saveRides(rides);
+  saveDrivers(drivers);
+  io.emit('rides:updated', rides);
+  io.emit('drivers:updated', drivers);
+  io.emit('ride:status', { rideId: ride.id, status: 'completed' });
   res.json(ride);
 });
 
