@@ -83,6 +83,14 @@
     .suggestion { padding: 10px 12px; cursor: pointer; font-size: 13px; border-bottom: 1px solid var(--border); }
     .suggestion:hover { background: var(--panel); }
     .autocomplete-wrap { position: relative; }
+
+    /* Indikator veze */
+    #connBanner {
+      display: none; position: fixed; top: 60px; left: 0; right: 0; z-index: 5000;
+      background: #ef4444; color: #fff; text-align: center;
+      padding: 8px 12px; font-size: 14px; font-weight: 700;
+    }
+    #connBanner.visible { display: block; }
   </style>
 </head>
 <body>
@@ -90,6 +98,8 @@
     <h1>🚖 Vozačka aplikacija</h1>
     <span class="small muted" style="margin-left:auto" id="headerDriver"></span>
   </header>
+
+  <div id="connBanner">⚠️ Veza prekinuta — ponovno povezivanje…</div>
 
   <!-- LOGIN -->
   <div id="loginScreen" class="screen active">
@@ -143,6 +153,7 @@
     let map, myMarker, routeLine = null, pickupMarker = null;
     let drivers = [], rides = [], currentDriver = null, earnings = 0;
     let offerTimer = null;
+    let gpsWatchId = null; // ID za watchPosition (kontinuirano GPS praćenje)
 
     map = L.map('map').setView([44.8125, 20.4612], 13);
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
@@ -161,6 +172,65 @@
       t.textContent = msg;
       document.body.appendChild(t);
       setTimeout(() => t.remove(), 3500);
+    }
+
+    // ---- Zvučni signal (WebAudio, bez fajlova) ----
+    function beep(times) {
+      try {
+        const ctx = new (window.AudioContext || window.webkitAudioContext)();
+        for (let i = 0; i < (times || 1); i++) {
+          const osc = ctx.createOscillator();
+          const gain = ctx.createGain();
+          osc.connect(gain); gain.connect(ctx.destination);
+          osc.frequency.value = 880;
+          osc.type = 'sine';
+          const t0 = ctx.currentTime + i * 0.35;
+          gain.gain.setValueAtTime(0.001, t0);
+          gain.gain.exponentialRampToValueAtTime(0.3, t0 + 0.05);
+          gain.gain.exponentialRampToValueAtTime(0.001, t0 + 0.3);
+          osc.start(t0); osc.stop(t0 + 0.32);
+        }
+      } catch (e) { /* zvuk nije kritičan */ }
+    }
+
+    // ---- Zarada u localStorage (po datumu — preživi refresh) ----
+    function todayKey() { return new Date().toISOString().slice(0, 10); }
+    function loadEarnings() {
+      try {
+        const saved = JSON.parse(localStorage.getItem('taxiEarnings') || '{}');
+        earnings = saved.date === todayKey() ? (saved.amount || 0) : 0;
+      } catch (e) { earnings = 0; }
+      document.getElementById('earnings').textContent = earnings + ' RSD';
+    }
+    function addEarnings(amount) {
+      earnings += amount || 0;
+      try {
+        localStorage.setItem('taxiEarnings', JSON.stringify({ date: todayKey(), amount: earnings }));
+      } catch (e) { /* localStorage nije dostupan */ }
+      document.getElementById('earnings').textContent = earnings + ' RSD';
+    }
+
+    // ---- Kontinuirano GPS praćenje (stvarna pozicija, ne simulacija) ----
+    function startGpsTracking() {
+      if (gpsWatchId != null) return; // već radi
+      if (!navigator.geolocation) { toast('Geolokacija nije dostupna'); return; }
+      gpsWatchId = navigator.geolocation.watchPosition(p => {
+        const pos = { lat: p.coords.latitude, lng: p.coords.longitude };
+        if (myMarker) myMarker.setLatLng([pos.lat, pos.lng]);
+        else myMarker = L.marker([pos.lat, pos.lng]).addTo(map);
+        if (currentDriver && currentDriver.status !== 'offline') {
+          socket.emit('driver:location', { driverId: currentDriver.id, lat: pos.lat, lng: pos.lng });
+        }
+      }, () => {
+        // tiho — greška se prikazuje samo kod eksplicitnog "Moj položaj"
+      }, { enableHighAccuracy: true, maximumAge: 5000, timeout: 15000 });
+    }
+
+    function stopGpsTracking() {
+      if (gpsWatchId != null) {
+        navigator.geolocation.clearWatch(gpsWatchId);
+        gpsWatchId = null;
+      }
     }
 
     function renderDriversSelect() {
@@ -182,6 +252,7 @@
       document.getElementById('mainScreen').classList.add('active');
       refreshSelf();
       centerOnMe();
+      startGpsTracking(); // kontinuirano praćenje od prijave
       setTimeout(() => map.invalidateSize(), 100);
     }
 
@@ -256,10 +327,11 @@
       fetch('/api/rides/' + rideId + '/status', {
         method: 'POST', headers: {'Content-Type':'application/json'},
         body: JSON.stringify({ status })
-      }).then(() => {
+      }).then(res => {
+        if (!res.ok) return res.json().catch(() => ({})).then(e => toast(e.error || 'Greška pri promeni statusa'));
         if (status === 'completed') {
           const r = rides.find(x => x.id === rideId);
-          if (r) { earnings += r.price || 0; document.getElementById('earnings').textContent = earnings + ' RSD'; }
+          if (r) addEarnings(r.price || 0);
           if (routeLine) { map.removeLayer(routeLine); routeLine = null; }
           if (pickupMarker) { map.removeLayer(pickupMarker); pickupMarker = null; }
         }
@@ -284,6 +356,7 @@
           </div>
         </div>
       `;
+      beep(2); // zvučni signal za novu ponudu
       offerTimer = setInterval(() => {
         remaining--;
         const el = document.getElementById('offerCountdown');
@@ -297,10 +370,14 @@
       fetch('/api/rides/' + rideId + '/accept', {
         method: 'POST', headers: {'Content-Type':'application/json'},
         body: JSON.stringify({ driverId: currentDriver.id })
-      }).then(() => {
+      }).then(res => {
         document.getElementById('offerArea').innerHTML = '';
-        toast('Vožnja prihvaćena!');
-        drawRouteToPickup();
+        if (res.ok) {
+          toast('Vožnja prihvaćena!');
+          drawRouteToPickup();
+        } else {
+          return res.json().catch(() => ({})).then(e => toast(e.error || 'Vožnja više nije dostupna'));
+        }
       });
     }
 
@@ -396,19 +473,7 @@
     function gotoAddress(lat, lon) {
       addressBox.innerHTML = '';
       map.setView([lat, lon], 16);
-      if (myMarker) myMarker.setLatLng([lat, lon]);
-      else myMarker = L.marker([lat, lon]).addTo(map);
     }
-
-    function simulateMovement() {
-      if (!currentDriver || currentDriver.status === 'offline') return;
-      if (currentDriver.lat == null) return;
-      currentDriver.lat += (Math.random() - 0.5) * 0.002;
-      currentDriver.lng += (Math.random() - 0.5) * 0.002;
-      socket.emit('driver:location', { driverId: currentDriver.id, lat: currentDriver.lat, lng: currentDriver.lng });
-      if (myMarker) myMarker.setLatLng([currentDriver.lat, currentDriver.lng]);
-    }
-    setInterval(simulateMovement, 3000);
 
     socket.on('init', (data) => { drivers = data.drivers; rides = data.rides; renderDriversSelect(); });
     socket.on('drivers:updated', (data) => { drivers = data; renderDriversSelect(); refreshSelf(); });
@@ -420,6 +485,24 @@
       else renderCurrentRide();
     });
 
+    // ---- Reconnect: indikator + automatska ponovna registracija vozača ----
+    socket.on('connect', () => {
+      document.getElementById('connBanner').classList.remove('visible');
+      if (currentDriver) {
+        // Ponovo registruj socket i vrati status (ako je bio online)
+        socket.emit('driver:register', { driverId: currentDriver.id });
+        if (currentDriver.status !== 'offline') {
+          const pos = getSelfPos();
+          socket.emit('driver:online', { driverId: currentDriver.id, lat: pos.lat, lng: pos.lng });
+          toast('Veza uspostavljena');
+        }
+      }
+    });
+    socket.on('disconnect', () => {
+      document.getElementById('connBanner').classList.add('visible');
+    });
+
+    loadEarnings();
     window.addEventListener('resize', () => map.invalidateSize());
   </script>
 </body>

@@ -76,6 +76,43 @@ function seedDrivers() {
 let drivers = seedDrivers();
 let rides = loadRides();
 
+// Recovery posle restarta servera: vožnje zaglavljene u toku (starije od 2h)
+// označi kao otkazane i oslobodi vozače koji nemaju aktivnu vožnju.
+// Bez ovoga vozač zauvek ostaje "enroute/busy" i ne može da prima vožnje.
+function recoverStaleState() {
+  const STALE_MS = 2 * 60 * 60 * 1000; // 2 sata
+  const now = Date.now();
+  let changed = false;
+
+  for (const ride of rides) {
+    if (['accepted', 'arrived', 'started'].includes(ride.status)) {
+      const age = now - new Date(ride.createdAt).getTime();
+      if (age > STALE_MS) {
+        ride.status = 'cancelled';
+        ride.history.push({ status: 'cancelled', at: new Date().toISOString(), by: 'system-recovery' });
+        changed = true;
+      }
+    }
+  }
+
+  const activeDriverIds = new Set(
+    rides.filter(r => !['completed', 'cancelled'].includes(r.status)).map(r => r.driverId)
+  );
+  for (const d of drivers) {
+    if (['enroute', 'busy'].includes(d.status) && !activeDriverIds.has(d.id)) {
+      d.status = 'offline';
+      changed = true;
+    }
+  }
+
+  if (changed) {
+    saveRides(rides);
+    saveDrivers(drivers);
+    console.log('♻️ Recovery: otkazane zastarele vožnje i oslobođeni vozači.');
+  }
+}
+recoverStaleState();
+
 // Mapiranje socket konekcija vozača: driverId -> socket.id
 const driverSockets = {};
 

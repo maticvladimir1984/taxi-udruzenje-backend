@@ -38,6 +38,13 @@
     @media (max-width: 900px) {
       .layout { grid-template-columns: 1fr; grid-template-rows: auto 50% auto; }
     }
+    /* Indikator veze */
+    #connBanner {
+      display: none; position: fixed; top: 60px; left: 0; right: 0; z-index: 5000;
+      background: #ef4444; color: #fff; text-align: center;
+      padding: 8px 12px; font-size: 14px; font-weight: 700;
+    }
+    #connBanner.visible { display: block; }
   </style>
 </head>
 <body>
@@ -45,6 +52,8 @@
     <h1>🚕 Dispečerska Centrala</h1>
     <span class="small muted" style="margin-left:auto">Interni operativni sistem udruženja</span>
   </header>
+
+  <div id="connBanner">⚠️ Veza prekinuta — ponovno povezivanje…</div>
 
   <div class="layout">
     <!-- Leva kolona: vozači -->
@@ -203,24 +212,36 @@
       });
     }
 
+    // Sačuvaj trenutne selekcije dropdown-a pre re-rendera (da se izbor dispečera ne izgubi)
+    function preserveDriverSelections(active) {
+      const saved = {};
+      active.forEach(r => {
+        const sel = document.getElementById('driverSelect-' + r.id);
+        if (sel) saved[r.id] = sel.value;
+      });
+      return saved;
+    }
+
     function renderRides() {
       const el = document.getElementById('ridesList');
       const active = rides.filter(r => !['completed', 'cancelled'].includes(r.status));
+      const savedSelections = preserveDriverSelections(active);
       el.innerHTML = active.map(r => {
         const driver = drivers.find(d => d.id === r.driverId);
         const waiting = ['pending', 'offering'].includes(r.status);
         let assignHtml = '';
         if (waiting) {
+          const savedSel = savedSelections[r.id];
           if (r.from && r.from.lat != null) {
             const sorted = sortedAvailableDrivers(r.from);
-            const nearestId = sorted.length && sorted[0].lat != null ? sorted[0].id : '';
             assignHtml = `
               <select id="driverSelect-${r.id}" style="margin-bottom:6px">
                 <option value="">— Izaberi vozača —</option>
                 ${sorted.map((d, i) => {
                   const has = d.lat != null && d.lng != null;
                   const dist = has ? haversineKm(r.from, { lat: d.lat, lng: d.lng }).toFixed(1) : null;
-                  return `<option value="${d.id}" ${i === 0 && has ? 'selected' : ''}>${i === 0 && has ? '⭐ ' : ''}${escapeHtml(d.name)} (${escapeHtml(d.vehicle)})${dist ? ' · ' + dist + ' km' : ''}</option>`;
+                  const selected = savedSel !== undefined ? (savedSel === d.id ? 'selected' : '') : (i === 0 && has ? 'selected' : '');
+                  return `<option value="${d.id}" ${selected}>${i === 0 && has ? '⭐ ' : ''}${escapeHtml(d.name)} (${escapeHtml(d.vehicle)})${dist ? ' · ' + dist + ' km' : ''}</option>`;
                 }).join('')}
               </select>
               <button class="warning small" style="width:100%;background:#f59e0b;color:#111" onclick="assignRide('${r.id}')">Dodeli vozača (ručno)</button>`;
@@ -228,7 +249,7 @@
             assignHtml = `
               <select id="driverSelect-${r.id}" style="margin-bottom:6px">
                 <option value="">— Izaberi vozača —</option>
-                ${drivers.filter(d => d.status === 'available' || d.status === 'offline').map(d => `<option value="${d.id}">${escapeHtml(d.name)} (${escapeHtml(d.vehicle)})</option>`).join('')}
+                ${drivers.filter(d => d.status === 'available' || d.status === 'offline').map(d => `<option value="${d.id}" ${savedSel === d.id ? 'selected' : ''}>${escapeHtml(d.name)} (${escapeHtml(d.vehicle)})</option>`).join('')}
               </select>
               <button class="warning small" style="width:100%;background:#f59e0b;color:#111" onclick="assignRide('${r.id}')">Dodeli vozača (ručno)</button>`;
           }
@@ -283,16 +304,24 @@
       const phone = document.getElementById('driverPhone').value.trim();
       const tag = document.getElementById('driverTag').value.trim();
       if (!name) return toast('Unesite ime vozača');
-      await fetch('/api/drivers', {
-        method: 'POST', headers: {'Content-Type':'application/json'},
-        body: JSON.stringify({ name, vehicle, plate, phone, tag })
-      });
-      document.getElementById('driverName').value = '';
-      document.getElementById('driverVehicle').value = '';
-      document.getElementById('driverPlate').value = '';
-      document.getElementById('driverPhone').value = '';
-      document.getElementById('driverTag').value = '';
-      toast('Vozač dodat');
+      try {
+        const res = await fetch('/api/drivers', {
+          method: 'POST', headers: {'Content-Type':'application/json'},
+          body: JSON.stringify({ name, vehicle, plate, phone, tag })
+        });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          return toast(err.error || 'Greška pri dodavanju vozača');
+        }
+        document.getElementById('driverName').value = '';
+        document.getElementById('driverVehicle').value = '';
+        document.getElementById('driverPlate').value = '';
+        document.getElementById('driverPhone').value = '';
+        document.getElementById('driverTag').value = '';
+        toast('Vozač dodat');
+      } catch (e) {
+        toast('Nema veze sa serverom');
+      }
     }
 
     function editDriver(id) {
@@ -322,26 +351,53 @@
         tag: document.getElementById('eTag-' + id).value.trim(),
       };
       if (!body.name) return toast('Ime je obavezno');
-      await fetch('/api/drivers/' + id, {
-        method: 'PUT', headers: {'Content-Type':'application/json'},
-        body: JSON.stringify(body)
-      });
-      toast('Vozač ažuriran');
+      try {
+        const res = await fetch('/api/drivers/' + id, {
+          method: 'PUT', headers: {'Content-Type':'application/json'},
+          body: JSON.stringify(body)
+        });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          return toast(err.error || 'Greška pri izmeni vozača');
+        }
+        toast('Vozač ažuriran');
+      } catch (e) {
+        toast('Nema veze sa serverom');
+      }
     }
 
     async function deleteDriver(id) {
-      await fetch('/api/drivers/' + id, { method: 'DELETE' });
-      toast('Vozač obrisan');
+      const d = drivers.find(x => x.id === id);
+      const label = d ? d.name : 'ovaj vozač';
+      if (!confirm('Da li sigurno želite da obrišete vozača "' + label + '"?')) return;
+      try {
+        const res = await fetch('/api/drivers/' + id, { method: 'DELETE' });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          return toast(err.error || 'Greška pri brisanju vozača');
+        }
+        toast('Vozač obrisan');
+      } catch (e) {
+        toast('Nema veze sa serverom');
+      }
     }
 
     async function assignRide(rideId) {
       const sel = document.getElementById('driverSelect-' + rideId);
       if (!sel.value) return toast('Izaberite vozača');
-      await fetch('/api/rides/' + rideId + '/assign', {
-        method: 'POST', headers: {'Content-Type':'application/json'},
-        body: JSON.stringify({ driverId: sel.value })
-      });
-      toast('Vozač dodeljen');
+      try {
+        const res = await fetch('/api/rides/' + rideId + '/assign', {
+          method: 'POST', headers: {'Content-Type':'application/json'},
+          body: JSON.stringify({ driverId: sel.value })
+        });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          return toast(err.error || 'Greška pri dodeli vožnje');
+        }
+        toast('Vozač dodeljen');
+      } catch (e) {
+        toast('Nema veze sa serverom');
+      }
     }
 
     async function updateSettings() {
@@ -364,6 +420,10 @@
     socket.on('drivers:updated', (data) => { drivers = data; renderDrivers(); renderRides(); });
     socket.on('rides:updated', (data) => { rides = data; renderRides(); });
     socket.on('ride:new', () => toast('🔔 Nova vožnja stigla!'));
+
+    // Reconnect indikator
+    socket.on('connect', () => document.getElementById('connBanner').classList.remove('visible'));
+    socket.on('disconnect', () => document.getElementById('connBanner').classList.add('visible'));
 
     window.addEventListener('resize', () => map.invalidateSize());
   </script>

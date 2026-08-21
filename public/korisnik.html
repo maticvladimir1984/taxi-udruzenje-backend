@@ -32,12 +32,21 @@
     .suggestion:hover { background: var(--panel); }
     .suggestion .t { color: var(--text); }
     .suggestion .s { color: var(--muted); font-size: 11px; }
+    /* Indikator veze */
+    #connBanner {
+      display: none; position: fixed; top: 60px; left: 0; right: 0; z-index: 5000;
+      background: #ef4444; color: #fff; text-align: center;
+      padding: 8px 12px; font-size: 14px; font-weight: 700;
+    }
+    #connBanner.visible { display: block; }
   </style>
 </head>
 <body>
   <header class="app-header" style="height:60px">
     <h1>🚕 Naruči vožnju</h1>
   </header>
+
+  <div id="connBanner">⚠️ Veza prekinuta — ponovno povezivanje…</div>
 
   <div class="layout">
     <div class="map-col">
@@ -152,6 +161,25 @@
       t.textContent = msg;
       document.body.appendChild(t);
       setTimeout(() => t.remove(), 3000);
+    }
+
+    // Zvučni signal (WebAudio, bez fajlova)
+    function beep(times) {
+      try {
+        const ctx = new (window.AudioContext || window.webkitAudioContext)();
+        for (let i = 0; i < (times || 1); i++) {
+          const osc = ctx.createOscillator();
+          const gain = ctx.createGain();
+          osc.connect(gain); gain.connect(ctx.destination);
+          osc.frequency.value = 660;
+          osc.type = 'sine';
+          const t0 = ctx.currentTime + i * 0.35;
+          gain.gain.setValueAtTime(0.001, t0);
+          gain.gain.exponentialRampToValueAtTime(0.3, t0 + 0.05);
+          gain.gain.exponentialRampToValueAtTime(0.001, t0 + 0.3);
+          osc.start(t0); osc.stop(t0 + 0.32);
+        }
+      } catch (e) { /* zvuk nije kritičan */ }
     }
 
     function setFrom(pos) {
@@ -391,12 +419,26 @@
       }
     });
     socket.on('rides:updated', (data) => {
+      const prevStatus = currentRide ? currentRide.status : null;
       rides = data;
       if (currentRide) {
         const updated = rides.find(r => r.id === currentRide.id);
-        if (updated) { currentRide = updated; renderTracking(); }
+        if (updated) {
+          currentRide = updated;
+          // Zvučni signal + toast kad vozač prihvati vožnju
+          if (prevStatus && ['pending', 'offering'].includes(prevStatus) && updated.status === 'accepted') {
+            const drv = drivers.find(d => d.id === updated.driverId);
+            beep(2);
+            toast('🔔 Vozač ' + (drv ? drv.name : '') + ' je prihvatio vašu vožnju!');
+          }
+          renderTracking();
+        }
       }
     });
+
+    // Reconnect indikator
+    socket.on('connect', () => document.getElementById('connBanner').classList.remove('visible'));
+    socket.on('disconnect', () => document.getElementById('connBanner').classList.add('visible'));
 
     window.addEventListener('resize', () => map.invalidateSize());
 
