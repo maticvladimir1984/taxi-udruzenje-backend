@@ -111,6 +111,9 @@
           <option value="">— Izaberite vozača/vozilo —</option>
         </select>
       </div>
+      <div class="field">
+        <input type="password" id="pinInput" placeholder="PIN (ako je postavljen)" inputmode="numeric" autocomplete="off">
+      </div>
       <button class="status-btn online" onclick="login()">▶ Uđi</button>
     </div>
   </div>
@@ -241,9 +244,23 @@
       if (prev) sel.value = prev;
     }
 
-    function login() {
+    async function login() {
       const id = document.getElementById('driverSelect').value;
       if (!id) return toast('Izaberite vaš nalog');
+      const pin = document.getElementById('pinInput').value.trim();
+      // Provera PIN-a na serveru (ako vozač ima PIN)
+      try {
+        const res = await fetch('/api/auth/driver', {
+          method: 'POST', headers: {'Content-Type':'application/json'},
+          body: JSON.stringify({ driverId: id, pin })
+        });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          return toast(err.error || 'Pogrešan PIN');
+        }
+      } catch (e) {
+        return toast('Nema veze sa serverom');
+      }
       currentDriver = drivers.find(d => d.id === id);
       if (!currentDriver) return toast('Nalog nije pronađen');
       socket.emit('driver:register', { driverId: currentDriver.id });

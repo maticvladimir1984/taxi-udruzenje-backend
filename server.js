@@ -9,6 +9,19 @@ const server = http.createServer(app);
 const io = new Server(server);
 
 const PORT = process.env.PORT || 3000;
+
+// ---- FAZA 3: Autentifikacija PIN-om ----
+// Admin PIN za dispečerski panel (promeniti u Render Environment varijabli ADMIN_PIN)
+const ADMIN_PIN = process.env.ADMIN_PIN || '1234';
+
+// ---- FAZA 3: Supabase (opciono) ----
+// Ako su SUPABASE_URL i SUPABASE_KEY podešeni kao env varijable na Render-u,
+// podaci se čuvaju u Supabase bazi umesto u JSON fajlovima (trajno čuvanje).
+const SUPABASE_URL = process.env.SUPABASE_URL || '';
+const SUPABASE_KEY = process.env.SUPABASE_KEY || '';
+const USE_SUPABASE = !!(SUPABASE_URL && SUPABASE_KEY);
+if (USE_SUPABASE) console.log('🗄️  Supabase storage AKTIVAN');
+else console.log('📁 JSON fajl storage (postavi SUPABASE_URL/SUPABASE_KEY za bazu)');
 const DATA_DIR = path.join(__dirname, 'data');
 const DRIVERS_FILE = path.join(DATA_DIR, 'drivers.json');
 const RIDES_FILE = path.join(DATA_DIR, 'rides.json');
@@ -50,9 +63,9 @@ function seedDrivers() {
 
   const now = new Date().toISOString();
   const defaults = [
-    { name: 'Test Vozac',  vehicle: 'BG-123-TT',    plate: '',           phone: '060123456',   tag: '' },
-    { name: 'vladimir',    vehicle: 'PO 134 FV',    plate: '',           phone: '063 88 22 727', tag: '' },
-    { name: 'Petar',       vehicle: 'Škoda Octavia', plate: 'BG-999-XX', phone: '060111222',   tag: '' },
+    { name: 'Test Vozac',  vehicle: 'BG-123-TT',    plate: '',           phone: '060123456',   tag: '', pin: '1111' },
+    { name: 'vladimir',    vehicle: 'PO 134 FV',    plate: '',           phone: '063 88 22 727', tag: '', pin: '2222' },
+    { name: 'Petar',       vehicle: 'Škoda Octavia', plate: 'BG-999-XX', phone: '060111222',   tag: '', pin: '3333' },
   ];
 
   const seeded = defaults.map((d, i) => ({
@@ -173,7 +186,24 @@ app.post('/api/settings', (req, res) => {
 });
 
 // ---- Vozači ----
-app.get('/api/drivers', (req, res) => res.json(drivers));
+app.get('/api/drivers', (req, res) => res.json(drivers.map(d => ({ ...d, pin: undefined }))));
+
+// Provera PIN-a vozača (prijava u vozačkoj aplikaciji)
+app.post('/api/auth/driver', (req, res) => {
+  const { driverId, pin } = req.body || {};
+  const driver = drivers.find(d => d.id === driverId);
+  if (!driver) return res.status(404).json({ error: 'Vozač ne postoji' });
+  if (!driver.pin) return res.json({ ok: true });
+  if (String(pin) !== String(driver.pin)) return res.status(401).json({ error: 'Pogrešan PIN' });
+  res.json({ ok: true });
+});
+
+// Provera admin PIN-a (prijava dispečera)
+app.post('/api/auth/admin', (req, res) => {
+  const { pin } = req.body || {};
+  if (String(pin) !== String(ADMIN_PIN)) return res.status(401).json({ error: 'Pogrešan PIN' });
+  res.json({ ok: true });
+});
 
 app.post('/api/drivers', (req, res) => {
   const { name, vehicle, plate, phone, tag } = req.body || {};
@@ -460,7 +490,7 @@ app.post('/api/rides/:id/complete', (req, res) => {
 
 // ---- Socket.IO za real-time ----
 io.on('connection', (socket) => {
-  socket.emit('init', { drivers, rides, settings: SETTINGS });
+  socket.emit('init', { drivers: drivers.map(d => ({ ...d, pin: undefined })), rides, settings: SETTINGS });
 
   // Vozač se registruje (veza između driverId i socket-a)
   socket.on('driver:register', (data) => {
